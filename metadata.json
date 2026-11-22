@@ -1,0 +1,6 @@
+{
+  "name": "NEGORA",
+  "description": "Turn Negatives into Memories — analog film negative-to-positive converter with C-41 orange mask removal, silver gelatin inversion, and tonal grading.",
+  "requestFramePermissions": [],
+  "majorCapabilities": []
+}
