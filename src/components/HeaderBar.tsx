@@ -1,10 +1,13 @@
+import type { User } from 'firebase/auth';
 import type { AppSection } from '../types/darkroom';
-import { Upload } from 'lucide-react';
+import { Cloud, Upload } from 'lucide-react';
 
 interface HeaderBarProps {
   activeSection: AppSection;
   onSelectSection: (section: AppSection) => void;
   onImportClick: () => void;
+  cloudUser: User | null;
+  onOpenCloudSync: () => void;
 }
 
 const LOGO_SRC = '/assets/aistudio/WhatsApp_Image_2026-11-22_at_11.16.17_PM_7f4b49a8.jpeg';
@@ -13,12 +16,16 @@ export function HeaderBar({
   activeSection,
   onSelectSection,
   onImportClick,
+  cloudUser,
+  onOpenCloudSync,
 }: HeaderBarProps) {
   const navItems: { id: AppSection; label: string }[] = [
     { id: 'darkroom', label: 'Darkroom' },
     { id: 'contact-sheet', label: 'Contact Sheet' },
     { id: 'guide', label: 'Film Guide' },
   ];
+
+  const userShortName = cloudUser?.displayName?.split(' ')[0] || 'Synced';
 
   return (
     <header className="shrink-0 bg-[#101012]">
@@ -72,11 +79,30 @@ export function HeaderBar({
           })}
         </nav>
 
-        <div className="shrink-0">
+        <div className="flex items-center gap-2 shrink-0">
+          <button
+            type="button"
+            onClick={onOpenCloudSync}
+            title={cloudUser ? `Cloud Sync (${cloudUser.email})` : 'Sign in to sync rolls'}
+            className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs font-medium transition-colors whitespace-nowrap shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#E59A28] ${
+              cloudUser
+                ? 'bg-white/[0.06] text-zinc-200 hover:bg-white/[0.1]'
+                : 'text-zinc-400 hover:text-zinc-100 hover:bg-white/[0.05]'
+            }`}
+          >
+            <Cloud
+              className={`w-3.5 h-3.5 ${cloudUser ? 'text-[#E59A28]' : ''}`}
+              aria-hidden="true"
+            />
+            <span className="hidden sm:inline">
+              {cloudUser ? userShortName : 'Cloud'}
+            </span>
+          </button>
+
           <button
             type="button"
             onClick={onImportClick}
-            className="inline-flex items-center gap-1.5 px-3 sm:px-3.5 py-1.5 sm:py-1.5 rounded-md bg-[#E59A28] hover:bg-[#eda93f] text-[#0E0E10] text-xs font-semibold transition-colors whitespace-nowrap shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-300"
+            className="inline-flex items-center gap-1.5 px-3 sm:px-3.5 py-1.5 rounded-md bg-[#E59A28] hover:bg-[#eda93f] text-[#0E0E10] text-xs font-semibold transition-colors whitespace-nowrap shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-300"
           >
             <Upload className="w-3.5 h-3.5" aria-hidden="true" />
             <span className="hidden sm:inline">Import Negatives</span>

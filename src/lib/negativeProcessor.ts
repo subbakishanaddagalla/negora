@@ -1,4 +1,5 @@
 import type {
+  BwToneStyle,
   CropRect,
   FilmProfileId,
   GradingSettings,
@@ -10,6 +11,7 @@ import type {
   SplitToneOffsets,
   ToneCurves,
 } from '../types/darkroom';
+import { injectExifIntoJpegBlob, type ExifMetadataInput } from './exifWriter';
 
 export interface FilmProfileMeta {
   id: FilmProfileId;
@@ -100,6 +102,7 @@ export function createDefaultSettings(
 ): GradingSettings {
   return {
     profile: 'c41-standard',
+    bwTone: overrides.profile === 'bw-selenium' ? 'selenium' : 'none',
     baseColor: { ...DEFAULT_BASE_COLOR },
     autoBalance: 94,
     borderIgnore: 4,
@@ -113,6 +116,7 @@ export function createDefaultSettings(
     tint: 0,
     saturation: 6,
     clarity: 12,
+    sharpen: 0,
     dustClean: 0,
     rotate: 0,
     flipH: false,
@@ -827,6 +831,35 @@ function applyClarity(data: Uint8ClampedArray, w: number, h: number, amount: num
   }
 }
 
+function applySharpen(data: Uint8ClampedArray, w: number, h: number, amount: number) {
+  if (amount <= 0) return;
+  const copy = new Uint8ClampedArray(data);
+  const strength = (amount / 100) * 1.1;
+
+  for (let y = 1; y < h - 1; y++) {
+    const row = y * w;
+    const prevRow = (y - 1) * w;
+    const nextRow = (y + 1) * w;
+    for (let x = 1; x < w - 1; x++) {
+      const idx = (row + x) * 4;
+      const lumC = 0.299 * copy[idx] + 0.587 * copy[idx + 1] + 0.114 * copy[idx + 2];
+      const lumAvg =
+        (0.299 * copy[(prevRow + x) * 4] + 0.587 * copy[(prevRow + x) * 4 + 1] + 0.114 * copy[(prevRow + x) * 4 + 2] +
+          0.299 * copy[(nextRow + x) * 4] + 0.587 * copy[(nextRow + x) * 4 + 1] + 0.114 * copy[(nextRow + x) * 4 + 2] +
+          0.299 * copy[(row + x - 1) * 4] + 0.587 * copy[(row + x - 1) * 4 + 1] + 0.114 * copy[(row + x - 1) * 4 + 2] +
+          0.299 * copy[(row + x + 1) * 4] + 0.587 * copy[(row + x + 1) * 4 + 1] + 0.114 * copy[(row + x + 1) * 4 + 2]) *
+        0.25;
+      const diff = lumC - lumAvg;
+      // Soft threshold avoids amplifying smooth grain noise
+      if (Math.abs(diff) < 2.2) continue;
+      const delta = diff * strength;
+      data[idx] = clampByte(copy[idx] + delta);
+      data[idx + 1] = clampByte(copy[idx + 1] + delta);
+      data[idx + 2] = clampByte(copy[idx + 2] + delta);
+    }
+  }
+}
+
 /**
  * Builds a smooth Fritsch-Carlson monotone cubic spline LUT (256 entries -> 0..1)
  * from normalized tone curve control points.
@@ -1277,13 +1310,33 @@ export function processNegativeImageData(
       b = clamp(b + shDelta.db * shM + midDelta.db * midM + hlDelta.db * hlM, 0, 1);
     }
 
-    if (settings.profile === 'bw-selenium') {
+    const activeBwTone: BwToneStyle =
+      settings.bwTone && settings.bwTone !== 'none'
+        ? settings.bwTone
+        : settings.profile === 'bw-selenium'
+          ? 'selenium'
+          : 'none';
+
+    if (isBW && activeBwTone === 'selenium') {
       const lum = r;
-      const coolShadow = (1 - lum) * 0.045;
+      const coolShadow = (1 - lum) * 0.048;
       const warmMid = Math.sin(lum * Math.PI) * 0.028;
       r = clamp(lum + warmMid + tempShift * 0.5, 0, 1);
       g = clamp(lum - coolShadow * 0.35 - tintShift * 0.3, 0, 1);
       b = clamp(lum + coolShadow - tempShift * 0.5, 0, 1);
+    } else if (isBW && activeBwTone === 'sepia') {
+      const lum = r;
+      const midWeight = Math.sin(lum * Math.PI);
+      r = clamp(lum + midWeight * 0.095 + (1 - lum) * 0.03 + tempShift * 0.4, 0, 1);
+      g = clamp(lum + midWeight * 0.032 - tintShift * 0.25, 0, 1);
+      b = clamp(lum - midWeight * 0.088 - (1 - lum) * 0.025 - tempShift * 0.4, 0, 1);
+    } else if (isBW && activeBwTone === 'cyanotype') {
+      const lum = r;
+      const shadowDeep = (1 - lum) * 0.14;
+      const midTint = Math.sin(lum * Math.PI) * 0.08;
+      r = clamp(lum - shadowDeep * 0.82 - midTint * 0.7, 0, 1);
+      g = clamp(lum - shadowDeep * 0.22 + midTint * 0.12, 0, 1);
+      b = clamp(lum + shadowDeep * 0.28 + midTint * 0.85, 0, 1);
     } else if (!isBW) {
       if (tempShift !== 0 || tintShift !== 0) {
         r = clamp(r * (1 + tempShift + tintShift * 0.5), 0, 1);
@@ -1311,6 +1364,10 @@ export function processNegativeImageData(
   // Apply non-destructive spot healing strokes on developed positive
   if (!ignoreCrop && !ignorePerspective && settings.healStrokes?.length > 0) {
     applyHealStrokes(data, width, height, settings.healStrokes);
+  }
+
+  if ((settings.sharpen ?? 0) > 0) {
+    applySharpen(data, width, height, settings.sharpen);
   }
 
   let clipBlack = 0;
@@ -1449,7 +1506,8 @@ export function computeWhiteBalanceFromPositive(
 export async function exportFullResolutionBlob(
   sourceCanvas: HTMLCanvasElement,
   settings: GradingSettings,
-  format: 'image/png' | 'image/jpeg'
+  format: 'image/png' | 'image/jpeg',
+  exifMeta?: ExifMetadataInput
 ): Promise<Blob> {
   const srcCtx = sourceCanvas.getContext('2d');
   if (!srcCtx) throw new Error('Canvas 2D context unavailable');
@@ -1482,14 +1540,19 @@ export async function exportFullResolutionBlob(
     }
   }
 
-  return new Promise<Blob>((resolve, reject) => {
+  const blob = await new Promise<Blob>((resolve, reject) => {
     outCanvas.toBlob(
-      (blob) => {
-        if (blob) resolve(blob);
+      (b) => {
+        if (b) resolve(b);
         else reject(new Error('Failed to encode exported image'));
       },
       format,
       format === 'image/jpeg' ? 0.95 : undefined
     );
   });
+
+  if (format === 'image/jpeg' && exifMeta) {
+    return injectExifIntoJpegBlob(blob, exifMeta);
+  }
+  return blob;
 }

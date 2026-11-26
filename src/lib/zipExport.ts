@@ -1,11 +1,12 @@
 import JSZip from 'jszip';
-import type { NegativeFrame } from '../types/darkroom';
+import type { NegativeFrame, RollMetadata } from '../types/darkroom';
 import { exportFullResolutionBlob } from './negativeProcessor';
 
 export async function buildRollZipArchive(
   frames: NegativeFrame[],
   format: 'image/png' | 'image/jpeg',
-  onProgress?: (completed: number, total: number) => void
+  onProgress?: (completed: number, total: number) => void,
+  rollMetadata?: RollMetadata
 ): Promise<Blob> {
   const zip = new JSZip();
   const ext = format === 'image/png' ? 'png' : 'jpg';
@@ -16,7 +17,17 @@ export async function buildRollZipArchive(
     const blob = await exportFullResolutionBlob(
       frame.sourceCanvas,
       frame.settings,
-      format
+      format,
+      format === 'image/jpeg'
+        ? {
+            title: frame.name,
+            camera: rollMetadata?.camera,
+            lens: rollMetadata?.lens,
+            filmStock: rollMetadata?.filmStock || frame.filmStockLabel,
+            iso: rollMetadata?.iso,
+            notes: frame.notes || rollMetadata?.notes,
+          }
+        : undefined
     );
 
     const framePrefix = String(i + 1).padStart(2, '0');

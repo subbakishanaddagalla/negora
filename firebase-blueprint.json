@@ -1,0 +1,244 @@
+{
+  "entities": {
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "Private user account profile for NEGORA cloud sync.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "displayName": {
+          "type": "string",
+          "maxLength": 120
+        },
+        "email": {
+          "type": "string",
+          "maxLength": 200
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["uid", "displayName", "email", "createdAt", "updatedAt"]
+    },
+    "GradingPreset": {
+      "title": "GradingPreset",
+      "description": "Saved custom darkroom grading preset owned by a user.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "ownerId": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "settings": {
+          "type": "object"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["id", "ownerId", "name", "settings", "createdAt", "updatedAt"]
+    },
+    "FilmRoll": {
+      "title": "FilmRoll",
+      "description": "Synced film roll metadata and active frame pointer.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "ownerId": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "rollTitle": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "camera": {
+          "type": "string",
+          "maxLength": 100
+        },
+        "lens": {
+          "type": "string",
+          "maxLength": 100
+        },
+        "filmStock": {
+          "type": "string",
+          "maxLength": 100
+        },
+        "iso": {
+          "type": "string",
+          "maxLength": 24
+        },
+        "notes": {
+          "type": "string",
+          "maxLength": 1000
+        },
+        "activeFrameId": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "frameCount": {
+          "type": "integer"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "id",
+        "ownerId",
+        "rollTitle",
+        "camera",
+        "lens",
+        "filmStock",
+        "iso",
+        "notes",
+        "activeFrameId",
+        "frameCount",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "FilmFrame": {
+      "title": "FilmFrame",
+      "description": "Individual negative frame metadata, grading settings, and compressed sync preview.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "ownerId": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "rollId": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "order": {
+          "type": "integer"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 140
+        },
+        "filmStockLabel": {
+          "type": "string",
+          "maxLength": 120
+        },
+        "notes": {
+          "type": "string",
+          "maxLength": 600
+        },
+        "isSample": {
+          "type": "boolean"
+        },
+        "sampleId": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "width": {
+          "type": "integer"
+        },
+        "height": {
+          "type": "integer"
+        },
+        "detectedType": {
+          "type": "string",
+          "enum": ["c41", "bw", "positive"]
+        },
+        "settings": {
+          "type": "object"
+        },
+        "syncImageDataUrl": {
+          "type": "string",
+          "maxLength": 750000
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "id",
+        "ownerId",
+        "rollId",
+        "order",
+        "name",
+        "filmStockLabel",
+        "notes",
+        "isSample",
+        "sampleId",
+        "width",
+        "height",
+        "detectedType",
+        "settings",
+        "syncImageDataUrl",
+        "createdAt",
+        "updatedAt"
+      ]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/UserProfile" },
+      "description": "Private user account profile."
+    },
+    "/users/{userId}/presets/{presetId}": {
+      "schema": { "$ref": "#/entities/GradingPreset" },
+      "description": "Custom grading presets owned by the user."
+    },
+    "/users/{userId}/rolls/{rollId}": {
+      "schema": { "$ref": "#/entities/FilmRoll" },
+      "description": "Film roll metadata and active frame state."
+    },
+    "/users/{userId}/rolls/{rollId}/frames/{frameId}": {
+      "schema": { "$ref": "#/entities/FilmFrame" },
+      "description": "Individual frames belonging to a synced film roll."
+    }
+  }
+}

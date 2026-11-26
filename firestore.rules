@@ -1,0 +1,207 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Default-deny global safety net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerifiedUser() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function hasValidUserParent(userId) {
+      return exists(/databases/$(database)/documents/users/$(userId));
+    }
+
+    function hasValidRollParent(userId, rollId) {
+      return exists(/databases/$(database)/documents/users/$(userId)/rolls/$(rollId)) &&
+        get(/databases/$(database)/documents/users/$(userId)/rolls/$(rollId)).data.ownerId == request.auth.uid;
+    }
+
+    function isValidUserProfile(data, userId) {
+      return data.keys().hasAll(['uid', 'displayName', 'email', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['uid', 'displayName', 'email', 'createdAt', 'updatedAt']) &&
+        data.uid is string && data.uid.size() >= 1 && data.uid.size() <= 128 &&
+        data.uid == userId && data.uid == request.auth.uid &&
+        data.displayName is string && data.displayName.size() <= 120 &&
+        data.email is string && data.email.size() <= 200 &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidGradingPreset(data, userId, presetId) {
+      return data.keys().hasAll(['id', 'ownerId', 'name', 'settings', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['id', 'ownerId', 'name', 'settings', 'createdAt', 'updatedAt']) &&
+        isValidId(data.id) && data.id == presetId &&
+        data.ownerId is string && data.ownerId.size() >= 1 && data.ownerId.size() <= 128 &&
+        data.ownerId == userId && data.ownerId == request.auth.uid &&
+        data.name is string && data.name.size() >= 1 && data.name.size() <= 80 &&
+        data.settings is map && data.settings.keys().size() <= 30 &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidFilmRoll(data, userId, rollId) {
+      return data.keys().hasAll([
+          'id', 'ownerId', 'rollTitle', 'camera', 'lens', 'filmStock',
+          'iso', 'notes', 'activeFrameId', 'frameCount', 'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'id', 'ownerId', 'rollTitle', 'camera', 'lens', 'filmStock',
+          'iso', 'notes', 'activeFrameId', 'frameCount', 'createdAt', 'updatedAt'
+        ]) &&
+        isValidId(data.id) && data.id == rollId &&
+        data.ownerId is string && data.ownerId.size() >= 1 && data.ownerId.size() <= 128 &&
+        data.ownerId == userId && data.ownerId == request.auth.uid &&
+        data.rollTitle is string && data.rollTitle.size() >= 1 && data.rollTitle.size() <= 120 &&
+        data.camera is string && data.camera.size() <= 100 &&
+        data.lens is string && data.lens.size() <= 100 &&
+        data.filmStock is string && data.filmStock.size() <= 100 &&
+        data.iso is string && data.iso.size() <= 24 &&
+        data.notes is string && data.notes.size() <= 1000 &&
+        (data.activeFrameId == null || (data.activeFrameId is string && data.activeFrameId.size() <= 128)) &&
+        data.frameCount is int && data.frameCount >= 0 && data.frameCount <= 200 &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidFilmFrame(data, userId, rollId, frameId) {
+      return data.keys().hasAll([
+          'id', 'ownerId', 'rollId', 'order', 'name', 'filmStockLabel', 'notes',
+          'isSample', 'sampleId', 'width', 'height', 'detectedType',
+          'settings', 'syncImageDataUrl', 'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'id', 'ownerId', 'rollId', 'order', 'name', 'filmStockLabel', 'notes',
+          'isSample', 'sampleId', 'width', 'height', 'detectedType',
+          'settings', 'syncImageDataUrl', 'createdAt', 'updatedAt'
+        ]) &&
+        isValidId(data.id) && data.id == frameId &&
+        data.ownerId is string && data.ownerId.size() >= 1 && data.ownerId.size() <= 128 &&
+        data.ownerId == userId && data.ownerId == request.auth.uid &&
+        isValidId(data.rollId) && data.rollId == rollId &&
+        data.order is int && data.order >= 0 && data.order <= 500 &&
+        data.name is string && data.name.size() >= 1 && data.name.size() <= 140 &&
+        data.filmStockLabel is string && data.filmStockLabel.size() <= 120 &&
+        data.notes is string && data.notes.size() <= 600 &&
+        data.isSample is bool &&
+        (data.sampleId == null || (data.sampleId is string && data.sampleId.size() <= 128)) &&
+        data.width is int && data.width >= 1 && data.width <= 20000 &&
+        data.height is int && data.height >= 1 && data.height <= 20000 &&
+        data.detectedType in ['c41', 'bw', 'positive'] &&
+        data.settings is map && data.settings.keys().size() <= 30 &&
+        data.syncImageDataUrl is string && data.syncImageDataUrl.size() <= 750000 &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    match /users/{userId} {
+      allow get: if isValidId(userId) && isOwner(userId);
+      allow list: if false;
+      allow create: if isValidId(userId) && isVerifiedUser() && isOwner(userId) &&
+        isValidUserProfile(incoming(), userId) &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time;
+      allow update: if isValidId(userId) && isVerifiedUser() && isOwner(userId) &&
+        isValidUserProfile(incoming(), userId) &&
+        incoming().uid == existing().uid &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time &&
+        incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'email', 'updatedAt']);
+      allow delete: if isValidId(userId) && isVerifiedUser() && isOwner(userId);
+
+      match /presets/{presetId} {
+        allow get: if isValidId(userId) && isValidId(presetId) && isOwner(userId);
+        allow list: if isOwner(userId) && resource.data.ownerId == request.auth.uid;
+        allow create: if isValidId(userId) && isValidId(presetId) && isVerifiedUser() &&
+          isOwner(userId) &&
+          isValidGradingPreset(incoming(), userId, presetId) &&
+          hasValidUserParent(userId) &&
+          incoming().createdAt == request.time &&
+          incoming().updatedAt == request.time;
+        allow update: if isValidId(userId) && isValidId(presetId) && isVerifiedUser() &&
+          isOwner(userId) &&
+          isValidGradingPreset(incoming(), userId, presetId) &&
+          hasValidUserParent(userId) &&
+          incoming().id == existing().id &&
+          incoming().ownerId == existing().ownerId &&
+          incoming().createdAt == existing().createdAt &&
+          incoming().updatedAt == request.time &&
+          incoming().diff(existing()).affectedKeys().hasOnly(['name', 'settings', 'updatedAt']);
+        allow delete: if isValidId(userId) && isValidId(presetId) && isVerifiedUser() && isOwner(userId);
+      }
+
+      match /rolls/{rollId} {
+        allow get: if isValidId(userId) && isValidId(rollId) && isOwner(userId);
+        allow list: if isOwner(userId) && resource.data.ownerId == request.auth.uid;
+        allow create: if isValidId(userId) && isValidId(rollId) && isVerifiedUser() &&
+          isOwner(userId) &&
+          isValidFilmRoll(incoming(), userId, rollId) &&
+          hasValidUserParent(userId) &&
+          incoming().createdAt == request.time &&
+          incoming().updatedAt == request.time;
+        allow update: if isValidId(userId) && isValidId(rollId) && isVerifiedUser() &&
+          isOwner(userId) &&
+          isValidFilmRoll(incoming(), userId, rollId) &&
+          hasValidUserParent(userId) &&
+          incoming().id == existing().id &&
+          incoming().ownerId == existing().ownerId &&
+          incoming().createdAt == existing().createdAt &&
+          incoming().updatedAt == request.time &&
+          incoming().diff(existing()).affectedKeys().hasOnly([
+            'rollTitle', 'camera', 'lens', 'filmStock', 'iso',
+            'notes', 'activeFrameId', 'frameCount', 'updatedAt'
+          ]);
+        allow delete: if isValidId(userId) && isValidId(rollId) && isVerifiedUser() && isOwner(userId);
+
+        match /frames/{frameId} {
+          allow get: if isValidId(userId) && isValidId(rollId) && isValidId(frameId) && isOwner(userId);
+          allow list: if isOwner(userId) && resource.data.ownerId == request.auth.uid;
+          allow create: if isValidId(userId) && isValidId(rollId) && isValidId(frameId) &&
+            isVerifiedUser() && isOwner(userId) &&
+            isValidFilmFrame(incoming(), userId, rollId, frameId) &&
+            hasValidRollParent(userId, rollId) &&
+            incoming().createdAt == request.time &&
+            incoming().updatedAt == request.time;
+          allow update: if isValidId(userId) && isValidId(rollId) && isValidId(frameId) &&
+            isVerifiedUser() && isOwner(userId) &&
+            isValidFilmFrame(incoming(), userId, rollId, frameId) &&
+            hasValidRollParent(userId, rollId) &&
+            incoming().id == existing().id &&
+            incoming().ownerId == existing().ownerId &&
+            incoming().rollId == existing().rollId &&
+            incoming().createdAt == existing().createdAt &&
+            incoming().updatedAt == request.time &&
+            incoming().diff(existing()).affectedKeys().hasOnly([
+              'order', 'name', 'filmStockLabel', 'notes',
+              'settings', 'syncImageDataUrl', 'updatedAt'
+            ]);
+          allow delete: if isValidId(userId) && isValidId(rollId) && isValidId(frameId) &&
+            isVerifiedUser() && isOwner(userId);
+        }
+      }
+    }
+  }
+}

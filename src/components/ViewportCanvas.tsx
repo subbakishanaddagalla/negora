@@ -1,7 +1,8 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import type {
   ActiveTool,
   CropRect,
+  GradingSettings,
   HealStroke,
   NegativeFrame,
   PerspectiveQuad,
@@ -14,6 +15,8 @@ import {
   processNegativeImageData,
 } from '../lib/negativeProcessor';
 import {
+  Camera,
+  Columns2,
   Crop,
   Eraser,
   FlipHorizontal2,
@@ -26,6 +29,7 @@ import {
   Sparkles,
   Undo2,
   Upload,
+  X,
   ZoomIn,
   ZoomOut,
 } from 'lucide-react';
@@ -53,7 +57,13 @@ interface ViewportCanvasProps {
   onPickGray: (normX: number, normY: number) => void;
   onImportFiles: (files: FileList | File[]) => void;
   onReloadSamples: () => void;
+  onOpenCamera: () => void;
   isLoadingSamples: boolean;
+  abSnapshotSettings: GradingSettings | null;
+  isAbCompare: boolean;
+  onSetAbSnapshot: () => void;
+  onToggleAbCompare: () => void;
+  onClearAbSnapshot: () => void;
 }
 
 type CropDragHandle = 'move' | 'nw' | 'ne' | 'sw' | 'se';
@@ -89,7 +99,13 @@ export function ViewportCanvas({
   onPickGray,
   onImportFiles,
   onReloadSamples,
+  onOpenCamera,
   isLoadingSamples,
+  abSnapshotSettings,
+  isAbCompare,
+  onSetAbSnapshot,
+  onToggleAbCompare,
+  onClearAbSnapshot,
 }: ViewportCanvasProps) {
   const negCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const posCanvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -149,10 +165,10 @@ export function ViewportCanvas({
     if (!el) return;
     const update = () => {
       const rect = el.getBoundingClientRect();
-      const pad = window.innerWidth >= 768 ? 72 : 24;
+      const pad = window.innerWidth >= 1024 ? 72 : 20;
       setStageSize({
-        w: Math.max(180, rect.width - pad),
-        h: Math.max(180, rect.height - pad),
+        w: Math.max(120, rect.width - pad),
+        h: Math.max(120, rect.height - pad),
       });
     };
     update();
@@ -212,26 +228,37 @@ export function ViewportCanvas({
     return processedData;
   })();
 
+  const abSnapshotData = useMemo(() => {
+    if (!frame || !isAbCompare || !abSnapshotSettings || isCropping || isWarping) {
+      return null;
+    }
+    return processNegativeImageData(frame.previewSourceData, abSnapshotSettings)
+      .imageData;
+  }, [frame, isAbCompare, abSnapshotSettings, isCropping, isWarping]);
+
   useEffect(() => {
     if (!frame) return;
-    const orientedNeg = createOrientedImageData(
-      frame.previewSourceData,
-      frame.settings.rotate,
-      frame.settings.flipH,
-      isWarping ? null : frame.settings.perspective,
-      isCropping || isWarping ? null : frame.settings.crop
-    );
+    const leftData =
+      abSnapshotData ??
+      createOrientedImageData(
+        frame.previewSourceData,
+        frame.settings.rotate,
+        frame.settings.flipH,
+        isWarping ? null : frame.settings.perspective,
+        isCropping || isWarping ? null : frame.settings.crop
+      );
 
     const targets = [negCanvasRef.current, sideNegCanvasRef.current];
     for (const canvas of targets) {
       if (!canvas) continue;
-      canvas.width = orientedNeg.width;
-      canvas.height = orientedNeg.height;
+      canvas.width = leftData.width;
+      canvas.height = leftData.height;
       const ctx = canvas.getContext('2d');
-      if (ctx) ctx.putImageData(orientedNeg, 0, 0);
+      if (ctx) ctx.putImageData(leftData, 0, 0);
     }
   }, [
     frame,
+    abSnapshotData,
     frame?.settings.rotate,
     frame?.settings.flipH,
     frame?.settings.perspective,
@@ -499,16 +526,16 @@ export function ViewportCanvas({
       ? frame.previewHeight
       : 3;
   const fitScale = Math.min(
-    Math.max(140, stageSize.w - matPad) / imgW,
-    Math.max(140, stageSize.h - matPad) / imgH
+    Math.max(110, stageSize.w - matPad) / imgW,
+    Math.max(110, stageSize.h - matPad) / imgH
   );
-  const boxW = Math.max(100, Math.round(imgW * fitScale));
-  const boxH = Math.max(100, Math.round(imgH * fitScale));
+  const boxW = Math.max(80, Math.round(imgW * fitScale));
+  const boxH = Math.max(80, Math.round(imgH * fitScale));
   const healPxRadius = Math.max(6, Math.round(healBrushRadius * Math.min(boxW, boxH)));
 
   return (
     <div
-      className="w-full h-[54dvh] min-h-[330px] max-h-[540px] lg:h-full lg:max-h-none lg:flex-1 min-w-0 flex flex-col bg-[#0B0B0D] relative overflow-hidden"
+      className="w-full h-[38dvh] min-h-[210px] max-h-[380px] sm:h-[40dvh] sm:max-h-[430px] lg:h-full lg:max-h-none lg:flex-1 min-w-0 flex flex-col bg-[#0B0B0D] relative overflow-hidden"
       onDragOver={(e) => {
         e.preventDefault();
         setIsDragOver(true);
@@ -521,8 +548,8 @@ export function ViewportCanvas({
       onDrop={handleDrop}
     >
       {/* Responsive Stage Toolbar */}
-      <div className="min-h-10 shrink-0 border-b border-white/[0.06] bg-[#101012] px-3 sm:px-4 py-1.5 md:py-0 md:h-10 flex flex-wrap md:flex-nowrap items-center justify-between gap-2">
-        <div className="flex items-center justify-between md:justify-start w-full md:w-auto gap-1 shrink-0">
+      <div className="min-h-10 shrink-0 border-b border-white/[0.06] bg-[#101012] px-3 sm:px-4 py-1.5 lg:py-0 lg:h-10 flex flex-wrap lg:flex-nowrap items-center justify-between gap-1.5 lg:gap-2">
+        <div className="flex items-center justify-between lg:justify-start w-full lg:w-auto gap-1 shrink-0 overflow-x-auto no-scrollbar lg:overflow-visible">
           <div className="flex items-center gap-0.5 sm:gap-1">
             {(
               [
@@ -552,7 +579,7 @@ export function ViewportCanvas({
             })}
           </div>
 
-          <span className="hidden md:inline-block w-px h-3.5 bg-white/[0.08] mx-1.5" aria-hidden="true" />
+          <span className="hidden lg:inline-block w-px h-3.5 bg-white/[0.08] mx-1.5" aria-hidden="true" />
 
           <div className="flex items-center gap-0.5">
             <button
@@ -576,11 +603,54 @@ export function ViewportCanvas({
             >
               <Redo2 className="w-3.5 h-3.5" />
             </button>
+
+            <span className="w-px h-3.5 bg-white/[0.08] mx-1" aria-hidden="true" />
+
+            <button
+              type="button"
+              disabled={!frame || isCropping || isWarping}
+              onClick={() => {
+                if (!abSnapshotSettings) {
+                  onSetAbSnapshot();
+                } else {
+                  onToggleAbCompare();
+                }
+              }}
+              title={
+                !abSnapshotSettings
+                  ? 'Save current grade as Snapshot A to compare A/B'
+                  : isAbCompare
+                    ? 'Comparing Snapshot A vs Live B (click to return to Negative/Positive)'
+                    : 'Compare saved Snapshot A vs Live B'
+              }
+              className={`inline-flex items-center gap-1 px-2 py-1 rounded text-xs font-medium transition-colors whitespace-nowrap shrink-0 disabled:opacity-40 ${
+                isAbCompare
+                  ? 'bg-[#E59A28]/15 text-[#E59A28]'
+                  : abSnapshotSettings
+                    ? 'bg-white/[0.06] text-zinc-200 hover:bg-white/[0.1]'
+                    : 'text-zinc-400 hover:text-zinc-100 hover:bg-white/[0.05]'
+              }`}
+            >
+              <Columns2 className="w-3.5 h-3.5" aria-hidden="true" />
+              <span>A/B</span>
+            </button>
+
+            {abSnapshotSettings && (
+              <button
+                type="button"
+                onClick={onClearAbSnapshot}
+                title="Clear Snapshot A"
+                aria-label="Clear Snapshot A"
+                className="p-1 rounded text-zinc-500 hover:text-zinc-200 transition-colors"
+              >
+                <X className="w-3 h-3" />
+              </button>
+            )}
           </div>
         </div>
 
-        <div className="flex items-center justify-between md:justify-end w-full md:w-auto gap-0.5 sm:gap-1 flex-wrap">
-          <div className="flex items-center gap-0.5 sm:gap-1 flex-wrap">
+        <div className="flex items-center justify-between lg:justify-end w-full lg:w-auto gap-1 flex-nowrap overflow-x-auto no-scrollbar lg:overflow-visible">
+          <div className="flex items-center gap-0.5 sm:gap-1 flex-nowrap shrink-0">
             <button
               type="button"
               onClick={() =>
@@ -894,7 +964,7 @@ export function ViewportCanvas({
       {/* Main Light-Table Canvas Area */}
       <div
         ref={stageRef}
-        className={`flex-1 min-h-0 darkroom-stage-bg relative flex items-center justify-center p-3 md:p-9 overflow-hidden select-none ${
+        className={`flex-1 min-h-0 darkroom-stage-bg relative flex items-center justify-center p-2.5 lg:p-9 overflow-hidden select-none ${
           isHealing
             ? 'touch-none md:cursor-none'
             : activeTool === 'pick-base' || activeTool === 'pick-gray'
@@ -922,11 +992,11 @@ export function ViewportCanvas({
                 Drop film negatives here
               </h2>
               <p className="text-xs text-zinc-400 leading-relaxed">
-                Supports scanned C-41 color negatives, black-and-white film, or
-                backlit phone captures.
+                Supports C-41, B&amp;W, 16-bit TIFF, and Camera RAW (DNG, CR2, NEF, ARW).
+                Drop files, scan with camera, or press Ctrl/Cmd+V to paste.
               </p>
             </div>
-            <div className="flex items-center justify-center gap-2.5 pt-1">
+            <div className="flex flex-wrap items-center justify-center gap-2.5 pt-1">
               <button
                 type="button"
                 onClick={() => {
@@ -936,6 +1006,14 @@ export function ViewportCanvas({
                 className="px-4 py-2 rounded-md bg-[#E59A28] hover:bg-[#eda93f] text-[#0E0E10] text-xs font-semibold transition-colors whitespace-nowrap"
               >
                 Choose Files
+              </button>
+              <button
+                type="button"
+                onClick={onOpenCamera}
+                className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-md bg-white/[0.07] hover:bg-white/[0.12] text-zinc-200 text-xs font-medium transition-colors whitespace-nowrap"
+              >
+                <Camera className="w-3.5 h-3.5" aria-hidden="true" />
+                Scan
               </button>
               <button
                 type="button"
@@ -960,10 +1038,12 @@ export function ViewportCanvas({
               <div className="shadow-2xl bg-black overflow-hidden">
                 <canvas
                   ref={sideNegCanvasRef}
-                  className="max-h-[34dvh] lg:max-h-[calc(100vh-270px)] max-w-full w-auto h-auto block"
+                  className="max-h-[22dvh] sm:max-h-[25dvh] lg:max-h-[calc(100vh-270px)] max-w-full w-auto h-auto block"
                 />
               </div>
-              <span className="text-[11px] text-zinc-500">Negative</span>
+              <span className="text-[11px] text-zinc-500">
+                {isAbCompare && abSnapshotSettings ? 'Snapshot A' : 'Negative'}
+              </span>
             </div>
 
             <div className="relative max-w-full max-h-full flex flex-col items-center gap-1.5">
@@ -978,10 +1058,12 @@ export function ViewportCanvas({
               >
                 <canvas
                   ref={sidePosCanvasRef}
-                  className="max-h-[34dvh] lg:max-h-[calc(100vh-290px)] max-w-full w-auto h-auto block"
+                  className="max-h-[22dvh] sm:max-h-[25dvh] lg:max-h-[calc(100vh-290px)] max-w-full w-auto h-auto block"
                 />
               </div>
-              <span className="text-[11px] text-zinc-400">Positive</span>
+              <span className="text-[11px] text-zinc-400">
+                {isAbCompare && abSnapshotSettings ? 'Live B' : 'Positive'}
+              </span>
             </div>
           </div>
         ) : (

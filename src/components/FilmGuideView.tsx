@@ -5,6 +5,7 @@ interface FilmGuideViewProps {
 }
 
 const SHORTCUTS = [
+  { key: 'Cmd / Ctrl + V', action: 'Paste an image negative directly from your clipboard' },
   { key: 'Cmd / Ctrl + Z', action: 'Undo last adjustment on the active frame' },
   { key: 'Cmd / Ctrl + Shift + Z', action: 'Redo previously undone adjustment' },
   { key: 'Space', action: 'Toggle between Developed Positive and Raw Negative' },
@@ -21,7 +22,7 @@ const SHORTCUTS = [
 
 export function FilmGuideView({ onReturnToDarkroom }: FilmGuideViewProps) {
   return (
-    <main className="flex-1 overflow-y-auto darkroom-scroll bg-[#0E0E10]">
+    <main className="flex-1 min-h-0 overflow-y-auto darkroom-scroll bg-[#0E0E10]">
       <div className="max-w-[980px] mx-auto px-4 sm:px-6 py-7 sm:py-10 space-y-10 sm:space-y-12">
         {/* Intro */}
         <section className="flex flex-col md:flex-row md:items-center justify-between gap-6 sm:gap-8 border-b border-zinc-800/90 pb-8">
@@ -96,9 +97,9 @@ export function FilmGuideView({ onReturnToDarkroom }: FilmGuideViewProps) {
                 Curves, Retouching &amp; Framing
               </h3>
               <p className="text-sm text-zinc-400 leading-relaxed">
-                Fine-tune per-channel RGB tone curves, split-tone color wheels, spot-heal
-                dust specks, and export clean prints or full ZIP rolls at original
-                resolution.
+                Fine-tune RGB tone curves, split-tone color wheels, spot-heal dust
+                specks, save custom presets, and export EXIF-tagged prints, contact
+                sheet PDFs, or full ZIP rolls.
               </p>
             </div>
           </div>
@@ -143,6 +144,17 @@ export function FilmGuideView({ onReturnToDarkroom }: FilmGuideViewProps) {
                 If text or street signs appear backwards after converting, press{' '}
                 <span className="font-mono text-zinc-100">F</span> or click the Flip
                 Horizontal button in the toolbar.
+              </p>
+            </div>
+            <div className="p-5 flex flex-col sm:flex-row sm:items-start gap-4">
+              <span className="font-mono text-xs text-zinc-500 shrink-0 w-28">
+                RAW &amp; Camera
+              </span>
+              <p className="text-sm text-zinc-300 leading-relaxed">
+                Import PNG, JPEG, WebP, 16-bit TIFF, or Camera RAW (DNG, CR2, NEF, ARW)
+                files, paste from clipboard, or use the built-in Camera Scanner for live
+                lightbox previews. Sign in via Cloud to sync rolls and presets across
+                devices.
               </p>
             </div>
           </div>

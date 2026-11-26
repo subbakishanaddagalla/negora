@@ -1,4 +1,4 @@
-import type { GradingSettings, NegativeFrame } from '../types/darkroom';
+import type { GradingSettings, NegativeFrame, RollMetadata } from '../types/darkroom';
 import { createDefaultSettings } from './negativeProcessor';
 import { buildPreviewDataFromCanvas } from './sampleNegatives';
 
@@ -7,10 +7,22 @@ const DB_VERSION = 1;
 const STORE_NAME = 'sessions';
 const SESSION_KEY = 'current-roll';
 
+export function createDefaultRollMetadata(): RollMetadata {
+  return {
+    rollTitle: 'Untitled Film Roll',
+    camera: '',
+    lens: '',
+    filmStock: '',
+    iso: '',
+    notes: '',
+  };
+}
+
 interface StoredFrameRecord {
   id: string;
   name: string;
   filmStockLabel: string;
+  notes?: string;
   isSample: boolean;
   width: number;
   height: number;
@@ -21,6 +33,7 @@ interface StoredFrameRecord {
 
 interface StoredSession {
   activeFrameId: string | null;
+  rollMetadata?: RollMetadata;
   frames: StoredFrameRecord[];
   updatedAt: number;
 }
@@ -66,7 +79,8 @@ function blobToImage(blob: Blob): Promise<HTMLImageElement> {
 
 export async function saveRollSession(
   frames: NegativeFrame[],
-  activeFrameId: string | null
+  activeFrameId: string | null,
+  rollMetadata?: RollMetadata
 ): Promise<void> {
   if (typeof indexedDB === 'undefined') return;
   try {
@@ -75,6 +89,7 @@ export async function saveRollSession(
         id: f.id,
         name: f.name,
         filmStockLabel: f.filmStockLabel,
+        notes: f.notes ?? '',
         isSample: f.isSample,
         width: f.width,
         height: f.height,
@@ -90,6 +105,7 @@ export async function saveRollSession(
       const store = tx.objectStore(STORE_NAME);
       const payload: StoredSession = {
         activeFrameId,
+        rollMetadata: rollMetadata ?? createDefaultRollMetadata(),
         frames: records,
         updatedAt: Date.now(),
       };
@@ -106,6 +122,7 @@ export async function saveRollSession(
 export async function loadRollSession(): Promise<{
   frames: NegativeFrame[];
   activeFrameId: string | null;
+  rollMetadata: RollMetadata;
 } | null> {
   if (typeof indexedDB === 'undefined') return null;
   try {
@@ -138,6 +155,7 @@ export async function loadRollSession(): Promise<{
         id: rec.id,
         name: rec.name,
         filmStockLabel: rec.filmStockLabel,
+        notes: rec.notes ?? '',
         isSample: rec.isSample,
         width: canvas.width,
         height: canvas.height,
@@ -154,6 +172,10 @@ export async function loadRollSession(): Promise<{
     return {
       frames: hydrated,
       activeFrameId: session.activeFrameId,
+      rollMetadata: {
+        ...createDefaultRollMetadata(),
+        ...(session.rollMetadata ?? {}),
+      },
     };
   } catch {
     return null;

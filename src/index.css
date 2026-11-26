@@ -12,6 +12,16 @@
     font-family: var(--font-sans);
     background-color: #0e0e10;
     color: #f4f4f5;
+    overflow-x: hidden;
+    overscroll-behavior-y: none;
+  }
+
+  .no-scrollbar {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+  }
+  .no-scrollbar::-webkit-scrollbar {
+    display: none;
   }
 
   button:not(:disabled),

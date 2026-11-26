@@ -3,6 +3,7 @@ import {
   analyzeNegativeImageData,
   createDefaultSettings,
 } from './negativeProcessor';
+import { decodeNegativeFileToCanvas } from './rawImageDecoder';
 
 interface SampleDescriptor {
   id: string;
@@ -161,6 +162,7 @@ export async function createSampleNegativeFrames(): Promise<NegativeFrame[]> {
         id: desc.id,
         name: desc.name,
         filmStockLabel: desc.filmStockLabel,
+        notes: '',
         isSample: true,
         width: sourceCanvas.width,
         height: sourceCanvas.height,
@@ -185,48 +187,46 @@ export async function createSampleNegativeFrames(): Promise<NegativeFrame[]> {
     .map((r) => r.value);
 }
 
+export function createFrameFromCanvas(
+  canvas: HTMLCanvasElement,
+  name: string,
+  customLabel = ''
+): NegativeFrame {
+  const { previewData, previewWidth, previewHeight } =
+    buildPreviewDataFromCanvas(canvas);
+  const analysis = analyzeNegativeImageData(previewData);
+
+  const stockLabel =
+    customLabel ||
+    (analysis.detectedType === 'bw'
+      ? 'Monochrome Negative'
+      : analysis.detectedType === 'c41'
+        ? 'Color Negative · C-41'
+        : 'Scanned Film');
+
+  return {
+    id: `upload-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+    name,
+    filmStockLabel: stockLabel,
+    notes: '',
+    isSample: false,
+    width: canvas.width,
+    height: canvas.height,
+    previewWidth,
+    previewHeight,
+    sourceCanvas: canvas,
+    previewSourceData: previewData,
+    detectedType: analysis.detectedType,
+    settings: createDefaultSettings({
+      profile: analysis.recommendedProfile,
+      baseColor: analysis.baseColor,
+      borderIgnore: analysis.hasSprocketBorder ? 12 : 4,
+    }),
+  };
+}
+
 export async function createFrameFromFile(file: File): Promise<NegativeFrame> {
-  const objectUrl = URL.createObjectURL(file);
-  try {
-    const img = await loadImage(objectUrl);
-    const canvas = document.createElement('canvas');
-    canvas.width = img.naturalWidth;
-    canvas.height = img.naturalHeight;
-    const ctx = canvas.getContext('2d');
-    if (!ctx) throw new Error('Could not acquire 2D canvas context');
-    ctx.drawImage(img, 0, 0);
-
-    const { previewData, previewWidth, previewHeight } =
-      buildPreviewDataFromCanvas(canvas);
-    const analysis = analyzeNegativeImageData(previewData);
-
-    const cleanName = file.name.replace(/\.[^/.]+$/, '') || 'Scanned Negative';
-    const stockLabel =
-      analysis.detectedType === 'bw'
-        ? 'Monochrome Negative'
-        : analysis.detectedType === 'c41'
-          ? 'Color Negative · C-41'
-          : 'Scanned Film';
-
-    return {
-      id: `upload-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
-      name: cleanName,
-      filmStockLabel: stockLabel,
-      isSample: false,
-      width: canvas.width,
-      height: canvas.height,
-      previewWidth,
-      previewHeight,
-      sourceCanvas: canvas,
-      previewSourceData: previewData,
-      detectedType: analysis.detectedType,
-      settings: createDefaultSettings({
-        profile: analysis.recommendedProfile,
-        baseColor: analysis.baseColor,
-        borderIgnore: analysis.hasSprocketBorder ? 12 : 4,
-      }),
-    };
-  } finally {
-    URL.revokeObjectURL(objectUrl);
-  }
+  const { canvas, formatLabel } = await decodeNegativeFileToCanvas(file);
+  const cleanName = file.name.replace(/\.[^/.]+$/, '') || 'Scanned Negative';
+  return createFrameFromCanvas(canvas, cleanName, formatLabel);
 }

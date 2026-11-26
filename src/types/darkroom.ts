@@ -6,6 +6,8 @@ export type FilmProfileId =
   | 'bw-selenium'
   | 'positive-restore';
 
+export type BwToneStyle = 'none' | 'selenium' | 'sepia' | 'cyanotype';
+
 export type ViewMode = 'split' | 'positive' | 'negative' | 'side-by-side';
 
 export type ActiveTool =
@@ -67,6 +69,7 @@ export interface SplitToneOffsets {
 
 export interface GradingSettings {
   profile: FilmProfileId;
+  bwTone: BwToneStyle;
   baseColor: RGB;
   autoBalance: number; // 0 to 100
   borderIgnore: number; // 0 to 20 (%)
@@ -80,6 +83,7 @@ export interface GradingSettings {
   tint: number; // -100 to +100
   saturation: number; // -100 to +100
   clarity: number; // 0 to 100
+  sharpen: number; // 0 to 100
   dustClean: number; // 0 to 100
   rotate: 0 | 90 | 180 | 270;
   flipH: boolean;
@@ -89,6 +93,23 @@ export interface GradingSettings {
   curves: ToneCurves;
   splitTone: SplitToneOffsets;
   printBorder: PrintBorderStyle;
+}
+
+export interface GradingPreset {
+  id: string;
+  name: string;
+  createdAt: number;
+  updatedAt: number;
+  settings: Partial<GradingSettings>;
+}
+
+export interface RollMetadata {
+  rollTitle: string;
+  camera: string;
+  lens: string;
+  filmStock: string;
+  iso: string;
+  notes: string;
 }
 
 export interface HistogramData {
@@ -105,6 +126,7 @@ export interface NegativeFrame {
   id: string;
   name: string;
   filmStockLabel: string;
+  notes: string;
   isSample: boolean;
   width: number;
   height: number;

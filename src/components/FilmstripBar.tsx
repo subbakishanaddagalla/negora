@@ -1,7 +1,7 @@
 import { useEffect, useRef } from 'react';
 import type { NegativeFrame } from '../types/darkroom';
 import { processNegativeImageData } from '../lib/negativeProcessor';
-import { Plus, X } from 'lucide-react';
+import { Camera, Plus, Sparkles, X } from 'lucide-react';
 
 interface FilmstripBarProps {
   frames: NegativeFrame[];
@@ -9,6 +9,8 @@ interface FilmstripBarProps {
   onSelectFrame: (id: string) => void;
   onRemoveFrame: (id: string) => void;
   onImportClick: () => void;
+  onOpenCamera: () => void;
+  onBatchAutoFrame: () => void;
 }
 
 function FilmstripThumb({
@@ -68,7 +70,7 @@ function FilmstripThumb({
         type="button"
         onClick={onSelect}
         title={`${frameNumber} · ${frame.name}`}
-        className={`relative h-[58px] w-[84px] rounded overflow-hidden transition-all bg-black flex items-center justify-center focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#E59A28] ${
+        className={`relative h-[46px] w-[68px] lg:h-[58px] lg:w-[84px] rounded overflow-hidden transition-all bg-black flex items-center justify-center focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#E59A28] ${
           isActive
             ? 'ring-2 ring-[#E59A28]'
             : 'opacity-70 hover:opacity-100 ring-1 ring-white/10'
@@ -102,9 +104,11 @@ export function FilmstripBar({
   onSelectFrame,
   onRemoveFrame,
   onImportClick,
+  onOpenCamera,
+  onBatchAutoFrame,
 }: FilmstripBarProps) {
   return (
-    <div className="h-[78px] sm:h-[82px] shrink-0 border-y lg:border-b-0 lg:border-t border-white/[0.06] bg-[#101012] px-3.5 sm:px-5 flex items-center gap-2.5 overflow-x-auto darkroom-scroll">
+    <div className="h-[62px] lg:h-[82px] shrink-0 border-y lg:border-b-0 lg:border-t border-white/[0.06] bg-[#101012] px-3 sm:px-5 flex items-center gap-2 lg:gap-2.5 overflow-x-auto darkroom-scroll">
       {frames.map((frame, index) => (
         <FilmstripThumb
           key={frame.id}
@@ -121,10 +125,34 @@ export function FilmstripBar({
         onClick={onImportClick}
         title="Add negative files"
         aria-label="Add negative files"
-        className="shrink-0 h-[58px] w-[64px] rounded border border-dashed border-white/15 hover:border-[#E59A28]/70 text-zinc-500 hover:text-zinc-200 flex items-center justify-center transition-colors"
+        className="shrink-0 h-[46px] w-[46px] lg:h-[58px] lg:w-[58px] rounded border border-dashed border-white/15 hover:border-[#E59A28]/70 text-zinc-500 hover:text-zinc-200 flex items-center justify-center transition-colors"
       >
         <Plus className="w-4 h-4" aria-hidden="true" />
       </button>
+
+      <button
+        type="button"
+        onClick={onOpenCamera}
+        title="Scan negative with camera"
+        aria-label="Scan negative with camera"
+        className="shrink-0 h-[46px] w-[48px] lg:h-[58px] lg:w-[58px] rounded border border-dashed border-white/15 hover:border-[#E59A28]/70 text-zinc-500 hover:text-zinc-200 flex flex-col items-center justify-center gap-0.5 lg:gap-1 transition-colors"
+      >
+        <Camera className="w-3.5 h-3.5 lg:w-4 lg:h-4" aria-hidden="true" />
+        <span className="text-[9px] lg:text-[10px] leading-none">Scan</span>
+      </button>
+
+      {frames.length > 1 && (
+        <button
+          type="button"
+          onClick={onBatchAutoFrame}
+          title="Auto-frame and crop all frames on this roll"
+          aria-label="Auto-frame whole roll"
+          className="shrink-0 h-[46px] lg:h-[58px] px-2.5 lg:px-3 rounded border border-white/[0.08] bg-white/[0.02] hover:bg-white/[0.06] text-zinc-400 hover:text-[#E59A28] flex flex-col items-center justify-center gap-0.5 lg:gap-1 transition-colors whitespace-nowrap"
+        >
+          <Sparkles className="w-3.5 h-3.5" aria-hidden="true" />
+          <span className="text-[9px] lg:text-[10px] leading-none">Auto Roll</span>
+        </button>
+      )}
     </div>
   );
 }
