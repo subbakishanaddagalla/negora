@@ -174,10 +174,32 @@ export function CloudSyncModal({
           )}
 
           {statusMessage && (
-            <p className="text-xs text-amber-300/90 leading-relaxed">{statusMessage}</p>
+            <p className="text-xs text-amber-300/90 leading-relaxed break-words">
+              {statusMessage}
+            </p>
           )}
           {errorMessage && (
-            <p className="text-xs text-red-300 leading-relaxed">{errorMessage}</p>
+            <p className="text-xs text-red-300 leading-relaxed break-words">
+              {(() => {
+                if (errorMessage.startsWith('{')) {
+                  try {
+                    const parsed = JSON.parse(errorMessage) as {
+                      error?: string;
+                      operationType?: string;
+                      path?: string;
+                    };
+                    if (parsed.error) {
+                      return `${parsed.error}${
+                        parsed.path ? ` (${parsed.operationType ?? 'sync'} · ${parsed.path})` : ''
+                      }`;
+                    }
+                  } catch {
+                    // Fallback to raw message
+                  }
+                }
+                return errorMessage;
+              })()}
+            </p>
           )}
         </div>
       </div>

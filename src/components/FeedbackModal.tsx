@@ -139,10 +139,24 @@ export function FeedbackModal({
           )}
 
           {sentNotice && (
-            <p className="text-xs text-emerald-300 leading-relaxed">{sentNotice}</p>
+            <p className="text-xs text-emerald-300 leading-relaxed break-words">
+              {sentNotice}
+            </p>
           )}
           {errorMsg && (
-            <p className="text-xs text-red-300 leading-relaxed">{errorMsg}</p>
+            <p className="text-xs text-red-300 leading-relaxed break-words">
+              {(() => {
+                if (errorMsg.startsWith('{')) {
+                  try {
+                    const parsed = JSON.parse(errorMsg) as { error?: string };
+                    if (parsed.error) return parsed.error;
+                  } catch {
+                    // Fallback to raw message
+                  }
+                }
+                return errorMsg;
+              })()}
+            </p>
           )}
         </div>
       </div>

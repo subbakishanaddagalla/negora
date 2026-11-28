@@ -309,50 +309,79 @@ function decodeDataUrlToCanvas(dataUrl: string): Promise<HTMLCanvasElement> {
   });
 }
 
-export async function ensureUserProfile(
+const profileSyncQueue = new Map<string, Promise<void>>();
+
+export function ensureUserProfile(
   user: User,
   stats?: { presetCount?: number; rollCount?: number }
 ): Promise<void> {
   const uid = sanitizeId(user.uid);
-  const path = `users/${uid}`;
-  const ref = doc(db, 'users', uid);
-  const displayName = (user.displayName || 'NEGORA Photographer').slice(0, 120);
-  const email = (user.email || '').slice(0, 200);
+  const previous = profileSyncQueue.get(uid) ?? Promise.resolve();
 
-  try {
-    const snap = await getDoc(ref);
-    if (!snap.exists()) {
-      await setDoc(ref, {
-        uid,
-        displayName,
-        email,
-        presetCount: Math.max(0, Math.min(1000, Math.round(stats?.presetCount ?? 0))),
-        rollCount: Math.max(0, Math.min(1000, Math.round(stats?.rollCount ?? 0))),
-        createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp(),
-      });
-    } else {
-      const existing = snap.data();
-      const patch: Record<string, unknown> = {
-        displayName,
-        email,
-        updatedAt: serverTimestamp(),
-      };
-      if (typeof stats?.presetCount === 'number') {
-        patch.presetCount = Math.max(0, Math.min(1000, Math.round(stats.presetCount)));
-      } else if (typeof existing?.presetCount !== 'number') {
-        patch.presetCount = 0;
+  const next = previous
+    .catch(() => {
+      // Previous queued attempt failed; still allow next attempt to run cleanly
+    })
+    .then(async () => {
+      const path = `users/${uid}`;
+      const ref = doc(db, 'users', uid);
+      const displayName = (user.displayName || 'NEGORA Photographer').slice(0, 120);
+      const email = (user.email || '').slice(0, 200);
+
+      try {
+        const snap = await getDoc(ref);
+        if (!snap.exists()) {
+          await setDoc(ref, {
+            uid,
+            displayName,
+            email,
+            presetCount: Math.max(
+              0,
+              Math.min(1000, Math.round(stats?.presetCount ?? 0))
+            ),
+            rollCount: Math.max(
+              0,
+              Math.min(1000, Math.round(stats?.rollCount ?? 0))
+            ),
+            createdAt: serverTimestamp(),
+            updatedAt: serverTimestamp(),
+          });
+        } else {
+          const existing = snap.data();
+          const patch: Record<string, unknown> = {
+            displayName,
+            email,
+            updatedAt: serverTimestamp(),
+          };
+          if (typeof stats?.presetCount === 'number') {
+            patch.presetCount = Math.max(
+              0,
+              Math.min(1000, Math.round(stats.presetCount))
+            );
+          } else if (typeof existing?.presetCount !== 'number') {
+            patch.presetCount = 0;
+          }
+          if (typeof stats?.rollCount === 'number') {
+            patch.rollCount = Math.max(
+              0,
+              Math.min(1000, Math.round(stats.rollCount))
+            );
+          } else if (typeof existing?.rollCount !== 'number') {
+            patch.rollCount = 0;
+          }
+          await updateDoc(ref, patch);
+        }
+      } catch (error) {
+        handleFirestoreError(error, OperationType.WRITE, path);
       }
-      if (typeof stats?.rollCount === 'number') {
-        patch.rollCount = Math.max(0, Math.min(1000, Math.round(stats.rollCount)));
-      } else if (typeof existing?.rollCount !== 'number') {
-        patch.rollCount = 0;
-      }
-      await updateDoc(ref, patch);
+    });
+
+  profileSyncQueue.set(uid, next);
+  return next.finally(() => {
+    if (profileSyncQueue.get(uid) === next) {
+      profileSyncQueue.delete(uid);
     }
-  } catch (error) {
-    handleFirestoreError(error, OperationType.WRITE, path);
-  }
+  });
 }
 
 export function subscribeCloudMembers(
@@ -445,23 +474,24 @@ export function subscribeCloudPresets(
   const path = `users/${uid}/presets`;
   const q = query(
     collection(db, 'users', uid, 'presets'),
-    where('ownerId', '==', uid),
-    orderBy('updatedAt', 'desc')
+    where('ownerId', '==', uid)
   );
 
   return onSnapshot(
     q,
     (snapshot) => {
-      const list: GradingPreset[] = snapshot.docs.map((d) => {
-        const data = d.data();
-        return {
-          id: String(data.id ?? d.id),
-          name: String(data.name ?? 'Custom Look'),
-          createdAt: data.createdAt?.toMillis?.() ?? Date.now(),
-          updatedAt: data.updatedAt?.toMillis?.() ?? Date.now(),
-          settings: (data.settings ?? {}) as Partial<GradingSettings>,
-        };
-      });
+      const list: GradingPreset[] = snapshot.docs
+        .map((d) => {
+          const data = d.data();
+          return {
+            id: String(data.id ?? d.id),
+            name: String(data.name ?? 'Custom Look'),
+            createdAt: data.createdAt?.toMillis?.() ?? Date.now(),
+            updatedAt: data.updatedAt?.toMillis?.() ?? Date.now(),
+            settings: (data.settings ?? {}) as Partial<GradingSettings>,
+          };
+        })
+        .sort((a, b) => b.updatedAt - a.updatedAt);
       onData(list);
     },
     (error) => {
@@ -559,8 +589,8 @@ export async function syncRollToCloud(
           ...mutableFields,
           isSample: frame.isSample,
           sampleId: frame.isSample ? sanitizeId(frame.id) : null,
-          width: Math.max(1, Math.round(frame.width)),
-          height: Math.max(1, Math.round(frame.height)),
+          width: Math.max(1, Math.min(20000, Math.round(frame.width))),
+          height: Math.max(1, Math.min(20000, Math.round(frame.height))),
           detectedType: frame.detectedType,
           createdAt: serverTimestamp(),
           updatedAt: serverTimestamp(),
@@ -615,11 +645,12 @@ export async function loadRollFromCloud(
     const qSnap = await getDocs(
       query(
         collection(db, 'users', uid, 'rolls', rid, 'frames'),
-        where('ownerId', '==', uid),
-        orderBy('order', 'asc')
+        where('ownerId', '==', uid)
       )
     );
-    frameDocs = qSnap.docs.map((d) => d.data() as Record<string, unknown>);
+    frameDocs = qSnap.docs
+      .map((d) => d.data() as Record<string, unknown>)
+      .sort((a, b) => Number(a.order ?? 0) - Number(b.order ?? 0));
   } catch (error) {
     handleFirestoreError(error, OperationType.LIST, framesPath);
   }
@@ -782,23 +813,24 @@ export function subscribeFeaturedPresets(
   const path = 'featuredPresets';
   const q = query(
     collection(db, 'featuredPresets'),
-    where('isPublic', '==', true),
-    orderBy('updatedAt', 'desc')
+    where('isPublic', '==', true)
   );
   return onSnapshot(
     q,
     (snapshot) => {
-      const list: FeaturedPresetRecord[] = snapshot.docs.map((d) => {
-        const data = d.data();
-        return {
-          id: String(data.id ?? d.id),
-          name: String(data.name ?? 'Featured Look'),
-          description: String(data.description ?? ''),
-          settings: (data.settings ?? {}) as Partial<GradingSettings>,
-          createdAt: data.createdAt?.toMillis?.() ?? 0,
-          updatedAt: data.updatedAt?.toMillis?.() ?? 0,
-        };
-      });
+      const list: FeaturedPresetRecord[] = snapshot.docs
+        .map((d) => {
+          const data = d.data();
+          return {
+            id: String(data.id ?? d.id),
+            name: String(data.name ?? 'Featured Look'),
+            description: String(data.description ?? ''),
+            settings: (data.settings ?? {}) as Partial<GradingSettings>,
+            createdAt: data.createdAt?.toMillis?.() ?? 0,
+            updatedAt: data.updatedAt?.toMillis?.() ?? 0,
+          };
+        })
+        .sort((a, b) => b.updatedAt - a.updatedAt);
       onData(list);
     },
     (error) => {
