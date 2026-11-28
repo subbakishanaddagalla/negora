@@ -1,11 +1,19 @@
 import type { GradingPreset, GradingSettings } from '../types/darkroom';
-import { createDefaultCurves, createDefaultSplitTone } from './negativeProcessor';
+import {
+  createDefaultCurves,
+  createDefaultFilmCharacter,
+  createDefaultHsl,
+  createDefaultSplitTone,
+} from './negativeProcessor';
 
 const PRESETS_STORAGE_KEY = 'negora-custom-presets-v1';
 
 export function extractPresetSettings(
   settings: GradingSettings
 ): Partial<GradingSettings> {
+  const fc = settings.filmCharacter ?? createDefaultFilmCharacter();
+  const hsl = settings.hsl ?? createDefaultHsl();
+
   return {
     profile: settings.profile,
     bwTone: settings.bwTone ?? 'none',
@@ -52,6 +60,14 @@ export function extractPresetSettings(
       highlights: {
         ...(settings.splitTone?.highlights ?? createDefaultSplitTone().highlights),
       },
+    },
+    filmCharacter: { ...fc },
+    hsl: {
+      reds: { ...hsl.reds },
+      oranges: { ...hsl.oranges },
+      yellows: { ...hsl.yellows },
+      greens: { ...hsl.greens },
+      blues: { ...hsl.blues },
     },
   };
 }

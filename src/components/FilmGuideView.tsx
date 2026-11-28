@@ -2,6 +2,7 @@ import { ArrowRight } from 'lucide-react';
 
 interface FilmGuideViewProps {
   onReturnToDarkroom: () => void;
+  creatorName?: string;
 }
 
 const SHORTCUTS = [
@@ -12,15 +13,18 @@ const SHORTCUTS = [
   { key: 'B', action: 'Activate Pick Film Base eyedropper' },
   { key: 'G', action: 'Activate Pick Neutral Gray white-balance eyedropper' },
   { key: 'H', action: 'Activate Spot Heal brush for dust & scratches' },
-  { key: 'C', action: 'Open Crop & Multi-Frame Strip Splitter' },
+  { key: 'D', action: 'Activate Dodge & Burn exposure brush' },
+  { key: 'C', action: 'Open Crop, Aspect Ratio, Straighten & Strip Splitter' },
   { key: 'P', action: 'Open 4-Corner Perspective Straightener' },
+  { key: 'J', action: 'Toggle highlight & shadow clipping warning overlay' },
+  { key: 'U', action: 'Toggle Rule-of-Thirds alignment grid' },
   { key: 'R', action: 'Rotate active frame 90° clockwise' },
   { key: 'F', action: 'Flip horizontally (for emulsion-side scans)' },
   { key: '← / →', action: 'Select previous or next frame on the filmstrip' },
   { key: 'Esc', action: 'Cancel active tool or overlay' },
 ];
 
-export function FilmGuideView({ onReturnToDarkroom }: FilmGuideViewProps) {
+export function FilmGuideView({ onReturnToDarkroom, creatorName = '' }: FilmGuideViewProps) {
   return (
     <main className="flex-1 min-h-0 overflow-y-auto darkroom-scroll bg-[#0E0E10]">
       <div className="max-w-[980px] mx-auto px-4 sm:px-6 py-7 sm:py-10 space-y-10 sm:space-y-12">
@@ -153,7 +157,7 @@ export function FilmGuideView({ onReturnToDarkroom }: FilmGuideViewProps) {
               <p className="text-sm text-zinc-300 leading-relaxed">
                 Import PNG, JPEG, WebP, 16-bit TIFF, or Camera RAW (DNG, CR2, NEF, ARW)
                 files, paste from clipboard, or use the built-in Camera Scanner for live
-                lightbox previews. Sign in via Cloud to sync rolls and presets across
+                lightbox previews. Use Sign in to sync rolls and presets across
                 devices.
               </p>
             </div>
@@ -183,6 +187,13 @@ export function FilmGuideView({ onReturnToDarkroom }: FilmGuideViewProps) {
             </table>
           </div>
         </section>
+
+        {creatorName.trim() && (
+          <footer className="pt-6 border-t border-zinc-800/80 flex items-center justify-between text-xs text-zinc-500">
+            <span>NEGORA — Turn Negatives into Memories</span>
+            <span className="text-zinc-300">Created by {creatorName.trim()}</span>
+          </footer>
+        )}
       </div>
     </main>
   );

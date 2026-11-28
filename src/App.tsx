@@ -4,6 +4,8 @@ import type {
   ActiveTool,
   AppSection,
   CropRect,
+  DodgeBurnStroke,
+  ExportOptions,
   GradingPreset,
   GradingSettings,
   HealStroke,
@@ -13,11 +15,15 @@ import type {
   ViewMode,
 } from './types/darkroom';
 import {
+  DEFAULT_EXPORT_OPTIONS,
   analyzeNegativeImageData,
   computeWhiteBalanceFromPositive,
+  createDefaultFilmCharacter,
+  createDefaultHsl,
   createDefaultSettings,
   detectFrameCrop,
   exportFullResolutionBlob,
+  generateCubeLutString,
   processNegativeImageData,
   sampleBaseColorAt,
 } from './lib/negativeProcessor';
@@ -40,14 +46,38 @@ import {
 import { isSupportedNegativeFile } from './lib/rawImageDecoder';
 import { buildRollZipArchive } from './lib/zipExport';
 import { auth, signInWithGoogle, signOutUser } from './lib/firebase';
+import { Megaphone, Wrench, X } from 'lucide-react';
 import {
   DEFAULT_CLOUD_ROLL_ID,
+  DEFAULT_SITE_CONFIG,
+  HOST_ADMIN_EMAIL,
+  blockMember,
+  deleteFeaturedPreset,
+  deleteFeedbackReport,
   deletePresetFromCloud,
   ensureUserProfile,
+  isHostUser,
   loadRollFromCloud,
+  publishFeaturedPreset,
   savePresetToCloud,
+  saveSiteConfig,
+  subscribeBlockedMembers,
+  subscribeCloudMembers,
   subscribeCloudPresets,
+  subscribeFeaturedPresets,
+  subscribeFeedbackInbox,
+  subscribeSiteConfig,
+  subscribeUserBlockStatus,
+  submitFeedbackReport,
   syncRollToCloud,
+  unblockMember,
+  updateFeedbackStatus,
+  type BlockedMemberRecord,
+  type CloudMemberRecord,
+  type FeaturedPresetRecord,
+  type FeedbackCategory,
+  type FeedbackRecord,
+  type SiteConfigRecord,
 } from './lib/cloudSync';
 import { HeaderBar } from './components/HeaderBar';
 import { ViewportCanvas } from './components/ViewportCanvas';
@@ -57,6 +87,8 @@ import { ContactSheetView } from './components/ContactSheetView';
 import { FilmGuideView } from './components/FilmGuideView';
 import { CameraScannerModal } from './components/CameraScannerModal';
 import { CloudSyncModal } from './components/CloudSyncModal';
+import { HostConsoleModal } from './components/HostConsoleModal';
+import { FeedbackModal } from './components/FeedbackModal';
 
 interface FrameHistory {
   past: GradingSettings[];
@@ -66,6 +98,8 @@ interface FrameHistory {
 const MAX_HISTORY_STEPS = 40;
 
 function cloneSettings(s: GradingSettings): GradingSettings {
+  const fc = s.filmCharacter ?? createDefaultFilmCharacter();
+  const h = s.hsl ?? createDefaultHsl();
   return {
     ...s,
     baseColor: { ...s.baseColor },
@@ -79,6 +113,7 @@ function cloneSettings(s: GradingSettings): GradingSettings {
         }
       : null,
     healStrokes: (s.healStrokes ?? []).map((st) => ({ ...st })),
+    dodgeBurnStrokes: (s.dodgeBurnStrokes ?? []).map((st) => ({ ...st })),
     curves: {
       master: (s.curves?.master ?? []).map((p) => ({ ...p })),
       r: (s.curves?.r ?? []).map((p) => ({ ...p })),
@@ -89,6 +124,14 @@ function cloneSettings(s: GradingSettings): GradingSettings {
       shadows: { ...(s.splitTone?.shadows ?? { x: 0, y: 0 }) },
       midtones: { ...(s.splitTone?.midtones ?? { x: 0, y: 0 }) },
       highlights: { ...(s.splitTone?.highlights ?? { x: 0, y: 0 }) },
+    },
+    filmCharacter: { ...fc },
+    hsl: {
+      reds: { ...h.reds },
+      oranges: { ...h.oranges },
+      yellows: { ...h.yellows },
+      greens: { ...h.greens },
+      blues: { ...h.blues },
     },
   };
 }
@@ -127,18 +170,32 @@ export default function App() {
     {}
   );
 
-  // A/B snapshot comparison state
+  // A/B snapshot comparison state & darkroom viewport helpers
   const [abSnapshotByFrame, setAbSnapshotByFrame] = useState<
     Record<string, GradingSettings>
   >({});
   const [isAbCompare, setIsAbCompare] = useState(false);
+  const [showClipping, setShowClipping] = useState(false);
+  const [showGrid, setShowGrid] = useState(false);
+  const [exportOptions, setExportOptions] = useState<ExportOptions>(
+    () => ({ ...DEFAULT_EXPORT_OPTIONS })
+  );
 
   // Camera Scanner modal state
   const [isCameraOpen, setIsCameraOpen] = useState(false);
 
-  // Firebase Auth & Cloud Sync modal state
+  // Firebase Auth, Cloud Sync & Host Console state
   const [isCloudModalOpen, setIsCloudModalOpen] = useState(false);
+  const [isHostConsoleOpen, setIsHostConsoleOpen] = useState(false);
+  const [isFeedbackOpen, setIsFeedbackOpen] = useState(false);
   const [cloudUser, setCloudUser] = useState<User | null>(null);
+  const [cloudMembers, setCloudMembers] = useState<CloudMemberRecord[]>([]);
+  const [siteConfig, setSiteConfig] = useState<SiteConfigRecord>(DEFAULT_SITE_CONFIG);
+  const [announcementDismissed, setAnnouncementDismissed] = useState(false);
+  const [featuredPresets, setFeaturedPresets] = useState<FeaturedPresetRecord[]>([]);
+  const [feedbackInbox, setFeedbackInbox] = useState<FeedbackRecord[]>([]);
+  const [blockedMembers, setBlockedMembers] = useState<BlockedMemberRecord[]>([]);
+  const [blockedStatus, setBlockedStatus] = useState<BlockedMemberRecord | null>(null);
   const [authReady, setAuthReady] = useState(false);
   const [isCloudSyncing, setIsCloudSyncing] = useState(false);
   const [cloudStatusMessage, setCloudStatusMessage] = useState<string | null>(null);
@@ -209,20 +266,65 @@ export default function App() {
     return () => window.clearTimeout(timer);
   }, [frames, activeFrameId, rollMetadata]);
 
-  // Listen to Firebase Auth state and subscribe to cloud presets when signed in
+  // Global site config (announcement, maintenance, toggles) & featured presets
+  useEffect(() => {
+    const unsubSite = subscribeSiteConfig((cfg) => {
+      setSiteConfig(cfg);
+    });
+    const unsubFeatured = subscribeFeaturedPresets(setFeaturedPresets);
+    return () => {
+      unsubSite();
+      unsubFeatured();
+    };
+  }, []);
+
+  useEffect(() => {
+    setAnnouncementDismissed(false);
+  }, [siteConfig.announcementEnabled, siteConfig.announcementText]);
+
+  // Listen to Firebase Auth state and subscribe to cloud presets (plus host-only streams)
   useEffect(() => {
     let unsubPresets: (() => void) | null = null;
-    const unsubAuth = onAuthStateChanged(auth, (user) => {
-      setCloudUser(user);
-      setAuthReady(true);
+    let unsubMembers: (() => void) | null = null;
+    let unsubBlock: (() => void) | null = null;
+    let unsubInbox: (() => void) | null = null;
+    let unsubBlockedList: (() => void) | null = null;
+
+    const cleanupUserSubs = () => {
       if (unsubPresets) {
         unsubPresets();
         unsubPresets = null;
       }
+      if (unsubMembers) {
+        unsubMembers();
+        unsubMembers = null;
+      }
+      if (unsubBlock) {
+        unsubBlock();
+        unsubBlock = null;
+      }
+      if (unsubInbox) {
+        unsubInbox();
+        unsubInbox = null;
+      }
+      if (unsubBlockedList) {
+        unsubBlockedList();
+        unsubBlockedList = null;
+      }
+    };
+
+    const unsubAuth = onAuthStateChanged(auth, (user) => {
+      setCloudUser(user);
+      setAuthReady(true);
+      cleanupUserSubs();
+
       if (user) {
-        void ensureUserProfile(user).catch(() => {
-          // Non-fatal background profile check
-        });
+        void ensureUserProfile(user, { presetCount: loadLocalPresets().length }).catch(
+          () => {
+            // Non-fatal background profile check
+          }
+        );
+        unsubBlock = subscribeUserBlockStatus(user, setBlockedStatus);
         unsubPresets = subscribeCloudPresets(user, (cloudPresets) => {
           setPresets((local) => {
             const merged = new Map<string, GradingPreset>();
@@ -235,12 +337,29 @@ export default function App() {
             return next;
           });
         });
+
+        if (isHostUser(user)) {
+          unsubMembers = subscribeCloudMembers(user, setCloudMembers);
+          unsubInbox = subscribeFeedbackInbox(user, setFeedbackInbox);
+          unsubBlockedList = subscribeBlockedMembers(user, setBlockedMembers);
+        } else {
+          setCloudMembers([]);
+          setFeedbackInbox([]);
+          setBlockedMembers([]);
+          setIsHostConsoleOpen(false);
+        }
+      } else {
+        setCloudMembers([]);
+        setFeedbackInbox([]);
+        setBlockedMembers([]);
+        setBlockedStatus(null);
+        setIsHostConsoleOpen(false);
       }
     });
 
     return () => {
       unsubAuth();
-      if (unsubPresets) unsubPresets();
+      cleanupUserSubs();
     };
   }, []);
 
@@ -528,17 +647,19 @@ export default function App() {
           settings: {
             ...cloneSettings(sourceSettings),
             rotate: f.settings.rotate,
+            straighten: f.settings.straighten ?? 0,
             flipH: f.settings.flipH,
             crop: f.settings.crop,
             perspective: f.settings.perspective,
             healStrokes: f.settings.healStrokes,
+            dodgeBurnStrokes: f.settings.dodgeBurnStrokes ?? [],
           },
         };
       })
     );
   }, [activeFrame, pushHistoryEntry]);
 
-  // Custom presets handlers
+  // Custom presets & featured presets handlers
   const handleSavePreset = useCallback(
     (name: string) => {
       if (!activeFrame) return;
@@ -550,24 +671,41 @@ export default function App() {
         updatedAt: now,
         settings: extractPresetSettings(activeFrame.settings),
       };
-      setPresets((prev) => {
-        const next = [preset, ...prev];
-        saveLocalPresets(next);
-        return next;
-      });
-      if (cloudUser) {
-        void savePresetToCloud(cloudUser, preset).catch(() => {
-          // Local preset still preserved if offline
-        });
+      const nextPresets = [preset, ...presets];
+      setPresets(nextPresets);
+      saveLocalPresets(nextPresets);
+      if (
+        cloudUser &&
+        !blockedStatus &&
+        (siteConfig.cloudSyncEnabled || isHostUser(cloudUser))
+      ) {
+        void savePresetToCloud(cloudUser, preset)
+          .then(() =>
+            ensureUserProfile(cloudUser, { presetCount: nextPresets.length })
+          )
+          .catch(() => {
+            // Local preset still preserved if offline
+          });
       }
       showTransientNotice(`Saved preset "${preset.name}"`);
     },
-    [activeFrame, cloudUser, showTransientNotice]
+    [
+      activeFrame,
+      blockedStatus,
+      cloudUser,
+      presets,
+      showTransientNotice,
+      siteConfig.cloudSyncEnabled,
+    ]
   );
 
   const handleApplyPreset = useCallback(
     (preset: GradingPreset) => {
       if (!activeFrame) return;
+      const defaultFc = createDefaultFilmCharacter();
+      const defaultHsl = createDefaultHsl();
+      const pFc = preset.settings.filmCharacter;
+      const pHsl = preset.settings.hsl;
       updateActiveSettings(
         {
           ...preset.settings,
@@ -586,6 +724,16 @@ export default function App() {
                 highlights: { ...preset.settings.splitTone.highlights },
               }
             : activeFrame.settings.splitTone,
+          filmCharacter: pFc ? { ...defaultFc, ...pFc } : defaultFc,
+          hsl: pHsl
+            ? {
+                reds: { ...defaultHsl.reds, ...pHsl.reds },
+                oranges: { ...defaultHsl.oranges, ...pHsl.oranges },
+                yellows: { ...defaultHsl.yellows, ...pHsl.yellows },
+                greens: { ...defaultHsl.greens, ...pHsl.greens },
+                blues: { ...defaultHsl.blues, ...pHsl.blues },
+              }
+            : defaultHsl,
         },
         true
       );
@@ -594,20 +742,69 @@ export default function App() {
     [activeFrame, showTransientNotice, updateActiveSettings]
   );
 
+  const handleApplyFeaturedPreset = useCallback(
+    (fp: FeaturedPresetRecord) => {
+      if (!activeFrame) return;
+      const defaultFc = createDefaultFilmCharacter();
+      const defaultHsl = createDefaultHsl();
+      const pFc = fp.settings.filmCharacter;
+      const pHsl = fp.settings.hsl;
+      updateActiveSettings(
+        {
+          ...fp.settings,
+          curves: fp.settings.curves
+            ? {
+                master: fp.settings.curves.master.map((p) => ({ ...p })),
+                r: fp.settings.curves.r.map((p) => ({ ...p })),
+                g: fp.settings.curves.g.map((p) => ({ ...p })),
+                b: fp.settings.curves.b.map((p) => ({ ...p })),
+              }
+            : activeFrame.settings.curves,
+          splitTone: fp.settings.splitTone
+            ? {
+                shadows: { ...fp.settings.splitTone.shadows },
+                midtones: { ...fp.settings.splitTone.midtones },
+                highlights: { ...fp.settings.splitTone.highlights },
+              }
+            : activeFrame.settings.splitTone,
+          filmCharacter: pFc ? { ...defaultFc, ...pFc } : defaultFc,
+          hsl: pHsl
+            ? {
+                reds: { ...defaultHsl.reds, ...pHsl.reds },
+                oranges: { ...defaultHsl.oranges, ...pHsl.oranges },
+                yellows: { ...defaultHsl.yellows, ...pHsl.yellows },
+                greens: { ...defaultHsl.greens, ...pHsl.greens },
+                blues: { ...defaultHsl.blues, ...pHsl.blues },
+              }
+            : defaultHsl,
+        },
+        true
+      );
+      showTransientNotice(`Applied featured look "${fp.name}"`);
+    },
+    [activeFrame, showTransientNotice, updateActiveSettings]
+  );
+
   const handleDeletePreset = useCallback(
     (presetId: string) => {
-      setPresets((prev) => {
-        const next = prev.filter((p) => p.id !== presetId);
-        saveLocalPresets(next);
-        return next;
-      });
-      if (cloudUser) {
-        void deletePresetFromCloud(cloudUser, presetId).catch(() => {
-          // Ignore if preset was only stored locally
-        });
+      const nextPresets = presets.filter((p) => p.id !== presetId);
+      setPresets(nextPresets);
+      saveLocalPresets(nextPresets);
+      if (
+        cloudUser &&
+        !blockedStatus &&
+        (siteConfig.cloudSyncEnabled || isHostUser(cloudUser))
+      ) {
+        void deletePresetFromCloud(cloudUser, presetId)
+          .then(() =>
+            ensureUserProfile(cloudUser, { presetCount: nextPresets.length })
+          )
+          .catch(() => {
+            // Ignore if preset was only stored locally
+          });
       }
     },
-    [cloudUser]
+    [blockedStatus, cloudUser, presets, siteConfig.cloudSyncEnabled]
   );
 
   // A/B snapshot handlers
@@ -769,6 +966,60 @@ export default function App() {
     updateActiveSettings({ healStrokes: [] }, true);
   }, [updateActiveSettings]);
 
+  const handleUpdateStraighten = useCallback(
+    (angleDeg: number, recordHistory = true) => {
+      updateActiveSettings({ straighten: angleDeg }, recordHistory);
+    },
+    [updateActiveSettings]
+  );
+
+  const handleAddDodgeBurnStroke = useCallback(
+    (stroke: DodgeBurnStroke) => {
+      if (!activeFrame) return;
+      const targetId = activeFrame.id;
+      if (pendingEditSnapshotRef.current?.frameId === targetId) {
+        const snap = pendingEditSnapshotRef.current.settings;
+        pendingEditSnapshotRef.current = null;
+        pushHistoryEntry(targetId, snap);
+      }
+
+      setFrames((prev) =>
+        prev.map((f) =>
+          f.id === targetId
+            ? {
+                ...f,
+                settings: {
+                  ...f.settings,
+                  dodgeBurnStrokes: [
+                    ...(f.settings.dodgeBurnStrokes ?? []),
+                    stroke,
+                  ],
+                },
+              }
+            : f
+        )
+      );
+    },
+    [activeFrame, pushHistoryEntry]
+  );
+
+  const handleClearDodgeBurnStrokes = useCallback(() => {
+    updateActiveSettings({ dodgeBurnStrokes: [] }, true);
+  }, [updateActiveSettings]);
+
+  const handleChangeExportOptions = useCallback((patch: Partial<ExportOptions>) => {
+    setExportOptions((prev) => ({ ...prev, ...patch }));
+  }, []);
+
+  const handleExportLut = useCallback(() => {
+    if (!activeFrame) return;
+    const lutText = generateCubeLutString(activeFrame.settings, activeFrame.name);
+    const blob = new Blob([lutText], { type: 'text/plain;charset=utf-8' });
+    const safeName = activeFrame.name.replace(/[^a-zA-Z0-9_-]+/g, '_');
+    triggerDownload(blob, `${safeName}_negora.cube`);
+    showTransientNotice(`Exported 3D LUT for "${activeFrame.name}"`);
+  }, [activeFrame, showTransientNotice]);
+
   const handleExportFrame = useCallback(
     async (frame: NegativeFrame, format: 'image/png' | 'image/jpeg') => {
       setIsExporting(true);
@@ -777,16 +1028,15 @@ export default function App() {
           frame.sourceCanvas,
           frame.settings,
           format,
-          format === 'image/jpeg'
-            ? {
-                title: frame.name,
-                camera: rollMetadata.camera,
-                lens: rollMetadata.lens,
-                filmStock: rollMetadata.filmStock || frame.filmStockLabel,
-                iso: rollMetadata.iso,
-                notes: frame.notes || rollMetadata.notes,
-              }
-            : undefined
+          {
+            title: frame.name,
+            camera: rollMetadata.camera,
+            lens: rollMetadata.lens,
+            filmStock: rollMetadata.filmStock || frame.filmStockLabel,
+            iso: rollMetadata.iso,
+            notes: frame.notes || rollMetadata.notes,
+          },
+          exportOptions
         );
         const ext = format === 'image/png' ? 'png' : 'jpg';
         const safeName = frame.name.replace(/[^a-zA-Z0-9_-]+/g, '_');
@@ -797,7 +1047,7 @@ export default function App() {
         setIsExporting(false);
       }
     },
-    [rollMetadata]
+    [exportOptions, rollMetadata]
   );
 
   const handleExportZip = useCallback(
@@ -830,11 +1080,17 @@ export default function App() {
     setIsCloudSyncing(true);
     try {
       const user = await signInWithGoogle();
-      await ensureUserProfile(user);
-      for (const preset of presets) {
-        await savePresetToCloud(user, preset);
+      await ensureUserProfile(user, { presetCount: presets.length });
+      if (siteConfig.cloudSyncEnabled || isHostUser(user)) {
+        for (const preset of presets) {
+          try {
+            await savePresetToCloud(user, preset);
+          } catch {
+            // Skip if account is restricted or offline
+          }
+        }
       }
-      setCloudStatusMessage('Signed in and ready to sync.');
+      setCloudStatusMessage('Signed in.');
     } catch (err) {
       setCloudErrorMessage(
         err instanceof Error ? err.message : 'Google sign-in failed.'
@@ -842,7 +1098,7 @@ export default function App() {
     } finally {
       setIsCloudSyncing(false);
     }
-  }, [presets]);
+  }, [presets, siteConfig.cloudSyncEnabled]);
 
   const handleCloudSignOut = useCallback(async () => {
     setCloudErrorMessage(null);
@@ -858,6 +1114,16 @@ export default function App() {
 
   const handlePushRollToCloud = useCallback(async () => {
     if (!cloudUser) return;
+    if (blockedStatus) {
+      setCloudErrorMessage(
+        blockedStatus.reason || 'Cloud sync has been suspended for your account.'
+      );
+      return;
+    }
+    if (!siteConfig.cloudSyncEnabled && !isHostUser(cloudUser)) {
+      setCloudErrorMessage('Cloud roll sync is temporarily paused by the host.');
+      return;
+    }
     setCloudErrorMessage(null);
     setCloudStatusMessage(null);
     setIsCloudSyncing(true);
@@ -879,10 +1145,27 @@ export default function App() {
     } finally {
       setIsCloudSyncing(false);
     }
-  }, [activeFrameId, cloudUser, frames, rollMetadata]);
+  }, [
+    activeFrameId,
+    blockedStatus,
+    cloudUser,
+    frames,
+    rollMetadata,
+    siteConfig.cloudSyncEnabled,
+  ]);
 
   const handlePullRollFromCloud = useCallback(async () => {
     if (!cloudUser) return;
+    if (blockedStatus) {
+      setCloudErrorMessage(
+        blockedStatus.reason || 'Cloud sync has been suspended for your account.'
+      );
+      return;
+    }
+    if (!siteConfig.cloudSyncEnabled && !isHostUser(cloudUser)) {
+      setCloudErrorMessage('Cloud roll sync is temporarily paused by the host.');
+      return;
+    }
     setCloudErrorMessage(null);
     setCloudStatusMessage(null);
     setIsCloudSyncing(true);
@@ -905,7 +1188,7 @@ export default function App() {
     } finally {
       setIsCloudSyncing(false);
     }
-  }, [cloudUser]);
+  }, [blockedStatus, cloudUser, siteConfig.cloudSyncEnabled]);
 
   // Global darkroom keyboard shortcuts
   useEffect(() => {
@@ -920,6 +1203,8 @@ export default function App() {
         setActiveTool('pan');
         setIsCameraOpen(false);
         setIsCloudModalOpen(false);
+        setIsHostConsoleOpen(false);
+        setIsFeedbackOpen(false);
         return;
       }
 
@@ -953,10 +1238,16 @@ export default function App() {
         setActiveTool((prev) => (prev === 'pick-gray' ? 'pan' : 'pick-gray'));
       } else if (lower === 'h') {
         setActiveTool((prev) => (prev === 'heal' ? 'pan' : 'heal'));
+      } else if (lower === 'd') {
+        setActiveTool((prev) => (prev === 'dodge-burn' ? 'pan' : 'dodge-burn'));
       } else if (lower === 'c') {
         setActiveTool((prev) => (prev === 'crop' ? 'pan' : 'crop'));
       } else if (lower === 'p') {
         setActiveTool((prev) => (prev === 'perspective' ? 'pan' : 'perspective'));
+      } else if (lower === 'j') {
+        setShowClipping((v) => !v);
+      } else if (lower === 'u') {
+        setShowGrid((v) => !v);
       } else if (lower === 'r') {
         handleRotate();
       } else if (lower === 'f') {
@@ -1044,6 +1335,59 @@ export default function App() {
     return () => window.removeEventListener('paste', onPaste);
   }, [handleImportFiles]);
 
+  const isHost = isHostUser(cloudUser);
+  const openFeedbackCount = feedbackInbox.filter((f) => f.status === 'open').length;
+  const showCameraScanner = siteConfig.cameraScannerEnabled || isHost;
+  const isMaintenanceBlocked = siteConfig.maintenanceMode && !isHost;
+
+  if (isMaintenanceBlocked) {
+    return (
+      <div className="min-h-[100dvh] w-full bg-[#0E0E10] text-zinc-100 flex items-center justify-center p-6">
+        <div className="w-full max-w-md rounded-xl border border-white/[0.08] bg-[#121214] p-7 text-center space-y-5">
+          <div className="w-11 h-11 rounded-full bg-amber-500/12 border border-amber-500/30 flex items-center justify-center mx-auto">
+            <Wrench className="w-5 h-5 text-[#E59A28]" aria-hidden="true" />
+          </div>
+          <div className="space-y-2">
+            <h1
+              className="text-xl font-semibold text-zinc-100 tracking-wide"
+              style={{ fontFamily: 'var(--font-display)' }}
+            >
+              NEGORA Darkroom Maintenance
+            </h1>
+            <p className="text-sm text-zinc-400 leading-relaxed">
+              {siteConfig.maintenanceMessage}
+            </p>
+          </div>
+
+          <div className="pt-2 border-t border-white/[0.06] flex flex-col items-center gap-2">
+            {cloudUser ? (
+              <>
+                <span className="text-[11px] text-zinc-500">
+                  Signed in as {cloudUser.email}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => void handleCloudSignOut()}
+                  className="text-xs text-zinc-400 hover:text-zinc-200 underline underline-offset-2"
+                >
+                  Switch account
+                </button>
+              </>
+            ) : (
+              <button
+                type="button"
+                onClick={() => void handleCloudSignIn()}
+                className="text-xs text-zinc-500 hover:text-zinc-300 transition-colors"
+              >
+                Host Sign In
+              </button>
+            )}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="h-[100dvh] lg:h-screen w-full flex flex-col bg-[#0E0E10] text-zinc-100 overflow-hidden">
       <input
@@ -1066,12 +1410,41 @@ export default function App() {
         onSelectSection={setActiveSection}
         onImportClick={() => fileInputRef.current?.click()}
         cloudUser={cloudUser}
+        onOpenFeedback={() => setIsFeedbackOpen(true)}
+        isHost={isHost}
+        hostBadgeCount={openFeedbackCount}
+        onOpenHostConsole={() => setIsHostConsoleOpen(true)}
+        creatorName={siteConfig.creatorName}
         onOpenCloudSync={() => {
           setCloudStatusMessage(null);
           setCloudErrorMessage(null);
           setIsCloudModalOpen(true);
         }}
       />
+
+      {siteConfig.announcementEnabled &&
+        siteConfig.announcementText.trim().length > 0 &&
+        !announcementDismissed && (
+          <div
+            role="status"
+            className="shrink-0 bg-[#1B160E] border-b border-[#E59A28]/30 px-4 sm:px-6 py-2 flex items-center justify-between gap-3 text-xs text-amber-100"
+          >
+            <div className="flex items-center gap-2 min-w-0">
+              <Megaphone className="w-3.5 h-3.5 text-[#E59A28] shrink-0" aria-hidden="true" />
+              <span className="truncate sm:whitespace-normal">
+                {siteConfig.announcementText}
+              </span>
+            </div>
+            <button
+              type="button"
+              onClick={() => setAnnouncementDismissed(true)}
+              aria-label="Dismiss announcement"
+              className="p-1 rounded text-amber-300/80 hover:text-white hover:bg-white/[0.06] shrink-0 transition-colors"
+            >
+              <X className="w-3.5 h-3.5" />
+            </button>
+          </div>
+        )}
 
       {errorMessage && (
         <div
@@ -1121,23 +1494,33 @@ export default function App() {
               onRedo={handleRedo}
               onRotate={handleRotate}
               onFlipH={handleFlipH}
+              onUpdateStraighten={handleUpdateStraighten}
               onUpdateCrop={handleUpdateCrop}
               onUpdatePerspective={handleUpdatePerspective}
               onSplitStrip={handleSplitStrip}
               onBeginHealStroke={handleBeginEdit}
               onAddHealStroke={handleAddHealStroke}
               onClearHealStrokes={handleClearHealStrokes}
+              onBeginDodgeBurnStroke={handleBeginEdit}
+              onAddDodgeBurnStroke={handleAddDodgeBurnStroke}
+              onClearDodgeBurnStrokes={handleClearDodgeBurnStrokes}
               onPickBase={handlePickBase}
               onPickGray={handlePickGray}
               onImportFiles={handleImportFiles}
               onReloadSamples={() => void loadSamples()}
               onOpenCamera={() => setIsCameraOpen(true)}
+              showCameraScanner={showCameraScanner}
               isLoadingSamples={isLoadingSamples}
               abSnapshotSettings={activeAbSnapshot}
               isAbCompare={isAbCompare}
               onSetAbSnapshot={handleSetAbSnapshot}
               onToggleAbCompare={handleToggleAbCompare}
               onClearAbSnapshot={handleClearAbSnapshot}
+              showClipping={showClipping}
+              onToggleClipping={() => setShowClipping((v) => !v)}
+              showGrid={showGrid}
+              onToggleGrid={() => setShowGrid((v) => !v)}
+              borderThicknessPct={exportOptions.borderThicknessPct}
             />
           </div>
 
@@ -1150,6 +1533,7 @@ export default function App() {
               onImportClick={() => fileInputRef.current?.click()}
               onOpenCamera={() => setIsCameraOpen(true)}
               onBatchAutoFrame={handleBatchAutoFrame}
+              showCameraScanner={showCameraScanner}
             />
           </div>
 
@@ -1169,11 +1553,16 @@ export default function App() {
                   ? handleExportFrame(activeFrame, format)
                   : Promise.resolve()
               }
+              onExportLut={handleExportLut}
+              exportOptions={exportOptions}
+              onChangeExportOptions={handleChangeExportOptions}
               isExporting={isExporting}
               frameCount={frames.length}
               presets={presets}
+              featuredPresets={featuredPresets}
               onSavePreset={handleSavePreset}
               onApplyPreset={handleApplyPreset}
+              onApplyFeaturedPreset={handleApplyFeaturedPreset}
               onDeletePreset={handleDeletePreset}
               onUpdateFrameMeta={handleUpdateFrameMeta}
             />
@@ -1194,11 +1583,15 @@ export default function App() {
           onResetRoll={() => void handleResetRoll()}
           onImportClick={() => fileInputRef.current?.click()}
           onOpenCamera={() => setIsCameraOpen(true)}
+          showCameraScanner={showCameraScanner}
           isBatchExporting={isBatchExporting}
           zipProgress={zipProgress}
         />
       ) : (
-        <FilmGuideView onReturnToDarkroom={() => setActiveSection('darkroom')} />
+        <FilmGuideView
+          onReturnToDarkroom={() => setActiveSection('darkroom')}
+          creatorName={siteConfig.creatorName}
+        />
       )}
 
       <CameraScannerModal
@@ -1218,11 +1611,55 @@ export default function App() {
         errorMessage={cloudErrorMessage}
         presetCount={presets.length}
         frameCount={frames.length}
+        cloudSyncEnabled={siteConfig.cloudSyncEnabled}
+        blockedReason={blockedStatus?.reason ?? null}
+        isHost={isHost}
+        memberCount={cloudMembers.length}
+        onOpenHostConsole={() => setIsHostConsoleOpen(true)}
         onSignIn={handleCloudSignIn}
         onSignOut={handleCloudSignOut}
         onPushRoll={handlePushRollToCloud}
         onPullRoll={handlePullRollFromCloud}
       />
+
+      <FeedbackModal
+        isOpen={isFeedbackOpen}
+        onClose={() => setIsFeedbackOpen(false)}
+        user={cloudUser}
+        onSignIn={handleCloudSignIn}
+        onSubmit={async (category: FeedbackCategory, message: string) => {
+          if (!cloudUser) throw new Error('Please sign in first.');
+          await submitFeedbackReport(cloudUser, category, message);
+          showTransientNotice('Feedback sent — thank you!');
+        }}
+      />
+
+      {isHost && cloudUser && (
+        <HostConsoleModal
+          isOpen={isHostConsoleOpen}
+          onClose={() => setIsHostConsoleOpen(false)}
+          hostEmail={HOST_ADMIN_EMAIL}
+          members={cloudMembers}
+          blockedMembers={blockedMembers}
+          siteConfig={siteConfig}
+          featuredPresets={featuredPresets}
+          feedbackItems={feedbackInbox}
+          activeFrameSettings={activeFrame?.settings ?? null}
+          onSaveSiteConfig={(cfg) => saveSiteConfig(cloudUser, cfg)}
+          onPublishFeaturedPreset={(name, desc, settings) =>
+            publishFeaturedPreset(cloudUser, name, desc, settings)
+          }
+          onDeleteFeaturedPreset={(id) => deleteFeaturedPreset(cloudUser, id)}
+          onUpdateFeedbackStatus={(id, status, hostNote) =>
+            updateFeedbackStatus(cloudUser, id, status, hostNote)
+          }
+          onDeleteFeedback={(id) => deleteFeedbackReport(cloudUser, id)}
+          onBlockMember={(uid, email, reason) =>
+            blockMember(cloudUser, uid, email, reason)
+          }
+          onUnblockMember={(uid) => unblockMember(cloudUser, uid)}
+        />
+      )}
     </div>
   );
 }

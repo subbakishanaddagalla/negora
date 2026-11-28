@@ -19,11 +19,91 @@ import type {
   NegativeFrame,
   RollMetadata,
 } from '../types/darkroom';
-import { createDefaultCurves, createDefaultSettings, createDefaultSplitTone } from './negativeProcessor';
+import {
+  createDefaultCurves,
+  createDefaultFilmCharacter,
+  createDefaultHsl,
+  createDefaultSettings,
+  createDefaultSplitTone,
+} from './negativeProcessor';
 import { buildPreviewDataFromCanvas, createSampleNegativeFrames } from './sampleNegatives';
 import { db, handleFirestoreError, OperationType } from './firebase';
 
 export const DEFAULT_CLOUD_ROLL_ID = 'active-roll';
+export const HOST_ADMIN_EMAIL = 'kishanaddagalla@gmail.com';
+
+export function isHostUser(user: User | null): boolean {
+  return Boolean(
+    user &&
+      user.emailVerified &&
+      user.email?.toLowerCase() === HOST_ADMIN_EMAIL
+  );
+}
+
+export interface CloudMemberRecord {
+  uid: string;
+  displayName: string;
+  email: string;
+  presetCount: number;
+  rollCount: number;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface SiteConfigRecord {
+  announcementEnabled: boolean;
+  announcementText: string;
+  maintenanceMode: boolean;
+  maintenanceMessage: string;
+  cloudSyncEnabled: boolean;
+  cameraScannerEnabled: boolean;
+  creatorName: string;
+  updatedAt: number;
+}
+
+export const DEFAULT_SITE_CONFIG: SiteConfigRecord = {
+  announcementEnabled: false,
+  announcementText: '',
+  maintenanceMode: false,
+  maintenanceMessage:
+    'NEGORA is currently undergoing quick darkroom maintenance. Please check back shortly.',
+  cloudSyncEnabled: true,
+  cameraScannerEnabled: true,
+  creatorName: '',
+  updatedAt: 0,
+};
+
+export interface FeaturedPresetRecord {
+  id: string;
+  name: string;
+  description: string;
+  settings: Partial<GradingSettings>;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export type FeedbackCategory = 'feature' | 'bug' | 'film-stock' | 'general';
+
+export interface FeedbackRecord {
+  id: string;
+  authorUid: string;
+  authorName: string;
+  authorEmail: string;
+  category: FeedbackCategory;
+  message: string;
+  status: 'open' | 'resolved';
+  hostNote: string;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface BlockedMemberRecord {
+  uid: string;
+  email: string;
+  reason: string;
+  blockedBy: string;
+  createdAt: number;
+}
 
 export interface CloudRollSummary {
   id: string;
@@ -47,6 +127,8 @@ function sanitizeSettingsMap(
 ): Record<string, unknown> {
   const curves = settings.curves ?? createDefaultCurves();
   const splitTone = settings.splitTone ?? createDefaultSplitTone();
+  const filmChar = settings.filmCharacter ?? createDefaultFilmCharacter();
+  const hsl = settings.hsl ?? createDefaultHsl();
 
   const cleanPoints = (pts?: Array<{ x: number; y: number }>) =>
     (pts ?? [])
@@ -55,6 +137,12 @@ function sanitizeSettingsMap(
         x: Number.isFinite(p.x) ? Number(p.x.toFixed(4)) : 0,
         y: Number.isFinite(p.y) ? Number(p.y.toFixed(4)) : 0,
       }));
+
+  const cleanShift = (s?: { h?: number; s?: number; l?: number }) => ({
+    h: Math.round(Number.isFinite(s?.h) ? (s?.h ?? 0) : 0),
+    s: Math.round(Number.isFinite(s?.s) ? (s?.s ?? 0) : 0),
+    l: Math.round(Number.isFinite(s?.l) ? (s?.l ?? 0) : 0),
+  });
 
   const out: Record<string, unknown> = {
     profile: settings.profile ?? 'c41-standard',
@@ -74,6 +162,7 @@ function sanitizeSettingsMap(
     sharpen: settings.sharpen ?? 0,
     dustClean: settings.dustClean ?? 0,
     rotate: settings.rotate ?? 0,
+    straighten: Number(((settings.straighten ?? 0)).toFixed(2)),
     flipH: Boolean(settings.flipH),
     printBorder: settings.printBorder ?? 'none',
     curves: {
@@ -95,6 +184,19 @@ function sanitizeSettingsMap(
         x: Number((splitTone.highlights?.x ?? 0).toFixed(4)),
         y: Number((splitTone.highlights?.y ?? 0).toFixed(4)),
       },
+    },
+    filmCharacter: {
+      grainAmount: Math.round(filmChar.grainAmount ?? 0),
+      grainSize: Math.round(filmChar.grainSize ?? 35),
+      halation: Math.round(filmChar.halation ?? 0),
+      fade: Math.round(filmChar.fade ?? 0),
+    },
+    hsl: {
+      reds: cleanShift(hsl.reds),
+      oranges: cleanShift(hsl.oranges),
+      yellows: cleanShift(hsl.yellows),
+      greens: cleanShift(hsl.greens),
+      blues: cleanShift(hsl.blues),
     },
   };
 
@@ -139,6 +241,16 @@ function sanitizeSettingsMap(
       x: Number(st.x.toFixed(4)),
       y: Number(st.y.toFixed(4)),
       radius: Number(st.radius.toFixed(4)),
+    }));
+  }
+  if (settings.dodgeBurnStrokes && settings.dodgeBurnStrokes.length > 0) {
+    out.dodgeBurnStrokes = settings.dodgeBurnStrokes.slice(0, 80).map((st) => ({
+      id: sanitizeId(st.id),
+      mode: st.mode === 'burn' ? 'burn' : 'dodge',
+      x: Number(st.x.toFixed(4)),
+      y: Number(st.y.toFixed(4)),
+      radius: Number(st.radius.toFixed(4)),
+      strength: Number(st.strength.toFixed(3)),
     }));
   }
 
@@ -197,7 +309,10 @@ function decodeDataUrlToCanvas(dataUrl: string): Promise<HTMLCanvasElement> {
   });
 }
 
-export async function ensureUserProfile(user: User): Promise<void> {
+export async function ensureUserProfile(
+  user: User,
+  stats?: { presetCount?: number; rollCount?: number }
+): Promise<void> {
   const uid = sanitizeId(user.uid);
   const path = `users/${uid}`;
   const ref = doc(db, 'users', uid);
@@ -211,19 +326,65 @@ export async function ensureUserProfile(user: User): Promise<void> {
         uid,
         displayName,
         email,
+        presetCount: Math.max(0, Math.min(1000, Math.round(stats?.presetCount ?? 0))),
+        rollCount: Math.max(0, Math.min(1000, Math.round(stats?.rollCount ?? 0))),
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
       });
     } else {
-      await updateDoc(ref, {
+      const existing = snap.data();
+      const patch: Record<string, unknown> = {
         displayName,
         email,
         updatedAt: serverTimestamp(),
-      });
+      };
+      if (typeof stats?.presetCount === 'number') {
+        patch.presetCount = Math.max(0, Math.min(1000, Math.round(stats.presetCount)));
+      } else if (typeof existing?.presetCount !== 'number') {
+        patch.presetCount = 0;
+      }
+      if (typeof stats?.rollCount === 'number') {
+        patch.rollCount = Math.max(0, Math.min(1000, Math.round(stats.rollCount)));
+      } else if (typeof existing?.rollCount !== 'number') {
+        patch.rollCount = 0;
+      }
+      await updateDoc(ref, patch);
     }
   } catch (error) {
     handleFirestoreError(error, OperationType.WRITE, path);
   }
+}
+
+export function subscribeCloudMembers(
+  user: User,
+  onData: (members: CloudMemberRecord[]) => void
+): () => void {
+  if (!isHostUser(user)) {
+    return () => {};
+  }
+
+  const q = query(collection(db, 'users'), orderBy('updatedAt', 'desc'));
+  return onSnapshot(
+    q,
+    (snapshot) => {
+      const members: CloudMemberRecord[] = snapshot.docs.map((d) => {
+        const data = d.data();
+        return {
+          uid: String(data.uid ?? d.id),
+          displayName: String(data.displayName ?? 'NEGORA Photographer'),
+          email: String(data.email ?? ''),
+          presetCount: typeof data.presetCount === 'number' ? data.presetCount : 0,
+          rollCount: typeof data.rollCount === 'number' ? data.rollCount : 0,
+          createdAt: data.createdAt?.toMillis?.() ?? 0,
+          updatedAt: data.updatedAt?.toMillis?.() ?? 0,
+        };
+      });
+      onData(members);
+    },
+    (error) => {
+      handleFirestoreError(error, OperationType.LIST, 'users');
+    }
+  );
 }
 
 export async function savePresetToCloud(
@@ -316,13 +477,13 @@ export async function syncRollToCloud(
   frames: NegativeFrame[],
   activeFrameId: string | null
 ): Promise<void> {
-  await ensureUserProfile(user);
+  const clampedFrames = frames.slice(0, 200);
+  await ensureUserProfile(user, { rollCount: clampedFrames.length });
   const uid = sanitizeId(user.uid);
   const rid = sanitizeId(rollId);
   const rollPath = `users/${uid}/rolls/${rid}`;
   const rollRef = doc(db, 'users', uid, 'rolls', rid);
 
-  const clampedFrames = frames.slice(0, 200);
   const cleanActiveId = activeFrameId ? sanitizeId(activeFrameId) : null;
 
   try {
@@ -534,3 +695,370 @@ export async function loadRollFromCloud(
       typeof rollData?.activeFrameId === 'string' ? rollData.activeFrameId : null,
   };
 }
+
+// =====================================================================
+// Host Feature 2 & 5: Global Announcement Banner & Feature Toggles
+// =====================================================================
+
+export function subscribeSiteConfig(
+  onData: (config: SiteConfigRecord) => void
+): () => void {
+  const path = 'siteConfig/global';
+  return onSnapshot(
+    doc(db, 'siteConfig', 'global'),
+    (snap) => {
+      if (!snap.exists()) {
+        onData(DEFAULT_SITE_CONFIG);
+        return;
+      }
+      const data = snap.data();
+      onData({
+        announcementEnabled: Boolean(data.announcementEnabled),
+        announcementText: String(data.announcementText ?? ''),
+        maintenanceMode: Boolean(data.maintenanceMode),
+        maintenanceMessage: String(
+          data.maintenanceMessage || DEFAULT_SITE_CONFIG.maintenanceMessage
+        ),
+        cloudSyncEnabled:
+          data.cloudSyncEnabled !== undefined ? Boolean(data.cloudSyncEnabled) : true,
+        cameraScannerEnabled:
+          data.cameraScannerEnabled !== undefined
+            ? Boolean(data.cameraScannerEnabled)
+            : true,
+        creatorName: String(data.creatorName ?? ''),
+        updatedAt: data.updatedAt?.toMillis?.() ?? 0,
+      });
+    },
+    (error) => {
+      handleFirestoreError(error, OperationType.GET, path);
+    }
+  );
+}
+
+export async function saveSiteConfig(
+  user: User,
+  config: Omit<SiteConfigRecord, 'updatedAt'>
+): Promise<void> {
+  if (!isHostUser(user)) {
+    throw new Error('Only the verified host can update site settings.');
+  }
+  const path = 'siteConfig/global';
+  const ref = doc(db, 'siteConfig', 'global');
+  const payload = {
+    announcementEnabled: Boolean(config.announcementEnabled),
+    announcementText: config.announcementText.trim().slice(0, 280),
+    maintenanceMode: Boolean(config.maintenanceMode),
+    maintenanceMessage:
+      (config.maintenanceMessage.trim() || DEFAULT_SITE_CONFIG.maintenanceMessage).slice(
+        0,
+        280
+      ),
+    cloudSyncEnabled: Boolean(config.cloudSyncEnabled),
+    cameraScannerEnabled: Boolean(config.cameraScannerEnabled),
+    creatorName: (config.creatorName ?? '').trim().slice(0, 80),
+    updatedBy: sanitizeId(user.uid),
+    updatedAt: serverTimestamp(),
+  };
+
+  try {
+    const snap = await getDoc(ref);
+    if (!snap.exists()) {
+      await setDoc(ref, { id: 'global', ...payload });
+    } else {
+      await updateDoc(ref, payload);
+    }
+  } catch (error) {
+    handleFirestoreError(error, OperationType.WRITE, path);
+  }
+}
+
+// =====================================================================
+// Host Feature 3: Featured Curated Film Presets
+// =====================================================================
+
+export function subscribeFeaturedPresets(
+  onData: (presets: FeaturedPresetRecord[]) => void
+): () => void {
+  const path = 'featuredPresets';
+  const q = query(
+    collection(db, 'featuredPresets'),
+    where('isPublic', '==', true),
+    orderBy('updatedAt', 'desc')
+  );
+  return onSnapshot(
+    q,
+    (snapshot) => {
+      const list: FeaturedPresetRecord[] = snapshot.docs.map((d) => {
+        const data = d.data();
+        return {
+          id: String(data.id ?? d.id),
+          name: String(data.name ?? 'Featured Look'),
+          description: String(data.description ?? ''),
+          settings: (data.settings ?? {}) as Partial<GradingSettings>,
+          createdAt: data.createdAt?.toMillis?.() ?? 0,
+          updatedAt: data.updatedAt?.toMillis?.() ?? 0,
+        };
+      });
+      onData(list);
+    },
+    (error) => {
+      handleFirestoreError(error, OperationType.LIST, path);
+    }
+  );
+}
+
+export async function publishFeaturedPreset(
+  user: User,
+  name: string,
+  description: string,
+  settings: Partial<GradingSettings>
+): Promise<void> {
+  if (!isHostUser(user)) {
+    throw new Error('Only the verified host can publish featured presets.');
+  }
+  const presetId = sanitizeId(
+    `featured-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
+  );
+  const path = `featuredPresets/${presetId}`;
+  try {
+    await setDoc(doc(db, 'featuredPresets', presetId), {
+      id: presetId,
+      ownerId: sanitizeId(user.uid),
+      name: (name.trim() || 'Featured Film Look').slice(0, 80),
+      description: description.trim().slice(0, 160),
+      isPublic: true,
+      settings: sanitizeSettingsMap(settings),
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+    });
+  } catch (error) {
+    handleFirestoreError(error, OperationType.CREATE, path);
+  }
+}
+
+export async function deleteFeaturedPreset(
+  user: User,
+  presetId: string
+): Promise<void> {
+  if (!isHostUser(user)) {
+    throw new Error('Only the verified host can delete featured presets.');
+  }
+  const pid = sanitizeId(presetId);
+  const path = `featuredPresets/${pid}`;
+  try {
+    await deleteDoc(doc(db, 'featuredPresets', pid));
+  } catch (error) {
+    handleFirestoreError(error, OperationType.DELETE, path);
+  }
+}
+
+// =====================================================================
+// Host Feature 4: Feedback & Bug Reports Inbox
+// =====================================================================
+
+export async function submitFeedbackReport(
+  user: User,
+  category: FeedbackCategory,
+  message: string
+): Promise<void> {
+  const feedbackId = sanitizeId(
+    `fb-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
+  );
+  const path = `feedback/${feedbackId}`;
+  const cleanMsg = message.trim().slice(0, 1000);
+  if (!cleanMsg) {
+    throw new Error('Please enter a short message before sending.');
+  }
+
+  try {
+    await setDoc(doc(db, 'feedback', feedbackId), {
+      id: feedbackId,
+      authorUid: sanitizeId(user.uid),
+      authorName: (user.displayName || 'NEGORA User').slice(0, 120),
+      authorEmail: (user.email || '').slice(0, 200),
+      category,
+      message: cleanMsg,
+      status: 'open',
+      hostNote: '',
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+    });
+  } catch (error) {
+    handleFirestoreError(error, OperationType.CREATE, path);
+  }
+}
+
+export function subscribeFeedbackInbox(
+  user: User,
+  onData: (items: FeedbackRecord[]) => void
+): () => void {
+  if (!isHostUser(user)) {
+    return () => {};
+  }
+  const path = 'feedback';
+  const q = query(collection(db, 'feedback'), orderBy('createdAt', 'desc'));
+  return onSnapshot(
+    q,
+    (snapshot) => {
+      const list: FeedbackRecord[] = snapshot.docs.map((d) => {
+        const data = d.data();
+        return {
+          id: String(data.id ?? d.id),
+          authorUid: String(data.authorUid ?? ''),
+          authorName: String(data.authorName ?? 'NEGORA User'),
+          authorEmail: String(data.authorEmail ?? ''),
+          category: (data.category as FeedbackCategory) ?? 'general',
+          message: String(data.message ?? ''),
+          status: data.status === 'resolved' ? 'resolved' : 'open',
+          hostNote: String(data.hostNote ?? ''),
+          createdAt: data.createdAt?.toMillis?.() ?? 0,
+          updatedAt: data.updatedAt?.toMillis?.() ?? 0,
+        };
+      });
+      onData(list);
+    },
+    (error) => {
+      handleFirestoreError(error, OperationType.LIST, path);
+    }
+  );
+}
+
+export async function updateFeedbackStatus(
+  user: User,
+  feedbackId: string,
+  status: 'open' | 'resolved',
+  hostNote = ''
+): Promise<void> {
+  if (!isHostUser(user)) return;
+  const fid = sanitizeId(feedbackId);
+  const path = `feedback/${fid}`;
+  try {
+    await updateDoc(doc(db, 'feedback', fid), {
+      status,
+      hostNote: hostNote.trim().slice(0, 400),
+      updatedAt: serverTimestamp(),
+    });
+  } catch (error) {
+    handleFirestoreError(error, OperationType.UPDATE, path);
+  }
+}
+
+export async function deleteFeedbackReport(
+  user: User,
+  feedbackId: string
+): Promise<void> {
+  if (!isHostUser(user)) return;
+  const fid = sanitizeId(feedbackId);
+  const path = `feedback/${fid}`;
+  try {
+    await deleteDoc(doc(db, 'feedback', fid));
+  } catch (error) {
+    handleFirestoreError(error, OperationType.DELETE, path);
+  }
+}
+
+// =====================================================================
+// Host Feature 6: Member Access Control (Block / Unblock)
+// =====================================================================
+
+export function subscribeUserBlockStatus(
+  user: User,
+  onBlocked: (blocked: BlockedMemberRecord | null) => void
+): () => void {
+  const uid = sanitizeId(user.uid);
+  const path = `blockedUsers/${uid}`;
+  return onSnapshot(
+    doc(db, 'blockedUsers', uid),
+    (snap) => {
+      if (!snap.exists()) {
+        onBlocked(null);
+        return;
+      }
+      const data = snap.data();
+      onBlocked({
+        uid: String(data.uid ?? uid),
+        email: String(data.email ?? ''),
+        reason: String(data.reason ?? ''),
+        blockedBy: String(data.blockedBy ?? ''),
+        createdAt: data.createdAt?.toMillis?.() ?? 0,
+      });
+    },
+    (error) => {
+      handleFirestoreError(error, OperationType.GET, path);
+    }
+  );
+}
+
+export function subscribeBlockedMembers(
+  user: User,
+  onData: (items: BlockedMemberRecord[]) => void
+): () => void {
+  if (!isHostUser(user)) {
+    return () => {};
+  }
+  const path = 'blockedUsers';
+  const q = query(collection(db, 'blockedUsers'), orderBy('createdAt', 'desc'));
+  return onSnapshot(
+    q,
+    (snapshot) => {
+      const list: BlockedMemberRecord[] = snapshot.docs.map((d) => {
+        const data = d.data();
+        return {
+          uid: String(data.uid ?? d.id),
+          email: String(data.email ?? ''),
+          reason: String(data.reason ?? ''),
+          blockedBy: String(data.blockedBy ?? ''),
+          createdAt: data.createdAt?.toMillis?.() ?? 0,
+        };
+      });
+      onData(list);
+    },
+    (error) => {
+      handleFirestoreError(error, OperationType.LIST, path);
+    }
+  );
+}
+
+export async function blockMember(
+  user: User,
+  targetUid: string,
+  targetEmail: string,
+  reason = 'Cloud sync suspended by host'
+): Promise<void> {
+  if (!isHostUser(user)) {
+    throw new Error('Only the verified host can block accounts.');
+  }
+  const uid = sanitizeId(targetUid);
+  if (uid === sanitizeId(user.uid)) {
+    throw new Error('You cannot block your own host account.');
+  }
+  const path = `blockedUsers/${uid}`;
+  try {
+    await setDoc(doc(db, 'blockedUsers', uid), {
+      uid,
+      email: targetEmail.trim().slice(0, 200),
+      reason: (reason.trim() || 'Cloud sync suspended by host').slice(0, 200),
+      blockedBy: sanitizeId(user.uid),
+      createdAt: serverTimestamp(),
+    });
+  } catch (error) {
+    handleFirestoreError(error, OperationType.CREATE, path);
+  }
+}
+
+export async function unblockMember(
+  user: User,
+  targetUid: string
+): Promise<void> {
+  if (!isHostUser(user)) {
+    throw new Error('Only the verified host can unblock accounts.');
+  }
+  const uid = sanitizeId(targetUid);
+  const path = `blockedUsers/${uid}`;
+  try {
+    await deleteDoc(doc(db, 'blockedUsers', uid));
+  } catch (error) {
+    handleFirestoreError(error, OperationType.DELETE, path);
+  }
+}
+

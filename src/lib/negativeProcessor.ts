@@ -1,10 +1,15 @@
 import type {
   BwToneStyle,
   CropRect,
+  DodgeBurnStroke,
+  ExportOptions,
+  FilmCharacterSettings,
   FilmProfileId,
   GradingSettings,
   HealStroke,
   HistogramData,
+  HslChannelKey,
+  HslSettings,
   PerspectiveQuad,
   Point2D,
   RGB,
@@ -97,6 +102,32 @@ export function createDefaultSplitTone(): SplitToneOffsets {
   };
 }
 
+export function createDefaultFilmCharacter(): FilmCharacterSettings {
+  return {
+    grainAmount: 0,
+    grainSize: 35,
+    halation: 0,
+    fade: 0,
+  };
+}
+
+export function createDefaultHsl(): HslSettings {
+  return {
+    reds: { h: 0, s: 0, l: 0 },
+    oranges: { h: 0, s: 0, l: 0 },
+    yellows: { h: 0, s: 0, l: 0 },
+    greens: { h: 0, s: 0, l: 0 },
+    blues: { h: 0, s: 0, l: 0 },
+  };
+}
+
+export const DEFAULT_EXPORT_OPTIONS: ExportOptions = {
+  jpegQuality: 0.95,
+  maxEdgePx: null,
+  borderThicknessPct: 6,
+  includeRebateCaption: false,
+};
+
 export function createDefaultSettings(
   overrides: Partial<GradingSettings> = {}
 ): GradingSettings {
@@ -119,12 +150,16 @@ export function createDefaultSettings(
     sharpen: 0,
     dustClean: 0,
     rotate: 0,
+    straighten: 0,
     flipH: false,
     crop: null,
     perspective: null,
     healStrokes: [],
+    dodgeBurnStrokes: [],
     curves: createDefaultCurves(),
     splitTone: createDefaultSplitTone(),
+    filmCharacter: createDefaultFilmCharacter(),
+    hsl: createDefaultHsl(),
     printBorder: 'none',
     ...overrides,
   };
@@ -578,12 +613,73 @@ export function cropImageData(src: ImageData, crop: CropRect | null): ImageData 
   return new ImageData(out, cw, ch);
 }
 
+/**
+ * Rotates an ImageData by -15..+15 degrees around its center with automatic
+ * inscribed-rectangle zoom so no dark triangular corners appear.
+ */
+export function applyFineStraighten(src: ImageData, angleDeg: number): ImageData {
+  if (!Number.isFinite(angleDeg) || Math.abs(angleDeg) < 0.05) {
+    return src;
+  }
+  const w = src.width;
+  const h = src.height;
+  const rad = (angleDeg * Math.PI) / 180;
+  const cosA = Math.cos(rad);
+  const sinA = Math.sin(rad);
+  const absCos = Math.abs(cosA);
+  const absSin = Math.abs(sinA);
+
+  const scaleX = 1 / (absCos + (h / Math.max(1, w)) * absSin);
+  const scaleY = 1 / (absCos + (w / Math.max(1, h)) * absSin);
+  const zoom = Math.min(scaleX, scaleY);
+
+  const cx = (w - 1) * 0.5;
+  const cy = (h - 1) * 0.5;
+  const out = new Uint8ClampedArray(w * h * 4);
+  const sData = src.data;
+
+  for (let y = 0; y < h; y++) {
+    const dy = (y - cy) * zoom;
+    for (let x = 0; x < w; x++) {
+      const dx = (x - cx) * zoom;
+      const sx = clamp(cx + dx * cosA + dy * sinA, 0, w - 1.001);
+      const sy = clamp(cy - dx * sinA + dy * cosA, 0, h - 1.001);
+
+      const x0 = sx | 0;
+      const y0 = sy | 0;
+      const fx = sx - x0;
+      const fy = sy - y0;
+
+      const i00 = (y0 * w + x0) * 4;
+      const i10 = (y0 * w + x0 + 1) * 4;
+      const i01 = ((y0 + 1) * w + x0) * 4;
+      const i11 = ((y0 + 1) * w + x0 + 1) * 4;
+
+      const w00 = (1 - fx) * (1 - fy);
+      const w10 = fx * (1 - fy);
+      const w01 = (1 - fx) * fy;
+      const w11 = fx * fy;
+
+      const dIdx = (y * w + x) * 4;
+      out[dIdx] = sData[i00] * w00 + sData[i10] * w10 + sData[i01] * w01 + sData[i11] * w11;
+      out[dIdx + 1] =
+        sData[i00 + 1] * w00 + sData[i10 + 1] * w10 + sData[i01 + 1] * w01 + sData[i11 + 1] * w11;
+      out[dIdx + 2] =
+        sData[i00 + 2] * w00 + sData[i10 + 2] * w10 + sData[i01 + 2] * w01 + sData[i11 + 2] * w11;
+      out[dIdx + 3] = 255;
+    }
+  }
+
+  return new ImageData(out, w, h);
+}
+
 export function createOrientedImageData(
   src: ImageData,
   rotate: 0 | 90 | 180 | 270,
   flipH: boolean,
   perspective: PerspectiveQuad | null = null,
-  crop: CropRect | null = null
+  crop: CropRect | null = null,
+  straighten = 0
 ): ImageData {
   let oriented: ImageData;
   if (rotate === 0 && !flipH) {
@@ -626,6 +722,10 @@ export function createOrientedImageData(
     }
 
     oriented = new ImageData(out, outW, outH);
+  }
+
+  if (Math.abs(straighten) >= 0.05) {
+    oriented = applyFineStraighten(oriented, straighten);
   }
 
   if (perspective) {
@@ -949,6 +1049,304 @@ function wheelOffsetToRgbDelta(pt: Point2D, strength: number): { dr: number; dg:
   };
 }
 
+function hasActiveHsl(hsl?: HslSettings): boolean {
+  if (!hsl) return false;
+  const keys: HslChannelKey[] = ['reds', 'oranges', 'yellows', 'greens', 'blues'];
+  return keys.some((k) => hsl[k].h !== 0 || hsl[k].s !== 0 || hsl[k].l !== 0);
+}
+
+function applyHslToRgb(
+  r: number,
+  g: number,
+  b: number,
+  hsl: HslSettings
+): [number, number, number] {
+  const max = Math.max(r, g, b);
+  const min = Math.min(r, g, b);
+  const delta = max - min;
+  if (delta < 0.012) return [r, g, b];
+
+  const l = (max + min) * 0.5;
+  const s = l > 0.5 ? delta / Math.max(1e-5, 2 - max - min) : delta / Math.max(1e-5, max + min);
+  if (s < 0.03) return [r, g, b];
+
+  let h = 0;
+  if (max === r) h = ((g - b) / delta + (g < b ? 6 : 0)) * 60;
+  else if (max === g) h = ((b - r) / delta + 2) * 60;
+  else h = ((r - g) / delta + 4) * 60;
+
+  const hueDist = (center: number) => {
+    const d = Math.abs(h - center);
+    return Math.min(d, 360 - d);
+  };
+
+  const wR = Math.max(0, 1 - hueDist(0) / 34);
+  const wO = Math.max(0, 1 - hueDist(30) / 28);
+  const wY = Math.max(0, 1 - hueDist(62) / 32);
+  const wG = Math.max(0, 1 - hueDist(128) / 56);
+  const wB = Math.max(0, 1 - hueDist(222) / 62);
+
+  const satGate = clamp((s - 0.03) / 0.14, 0, 1);
+
+  const dh =
+    (wR * hsl.reds.h +
+      wO * hsl.oranges.h +
+      wY * hsl.yellows.h +
+      wG * hsl.greens.h +
+      wB * hsl.blues.h) *
+    satGate;
+  const ds =
+    (wR * hsl.reds.s +
+      wO * hsl.oranges.s +
+      wY * hsl.yellows.s +
+      wG * hsl.greens.s +
+      wB * hsl.blues.s) *
+    0.01 *
+    satGate;
+  const dl =
+    (wR * hsl.reds.l +
+      wO * hsl.oranges.l +
+      wY * hsl.yellows.l +
+      wG * hsl.greens.l +
+      wB * hsl.blues.l) *
+    0.004 *
+    satGate;
+
+  if (Math.abs(dh) < 0.05 && Math.abs(ds) < 0.002 && Math.abs(dl) < 0.002) {
+    return [r, g, b];
+  }
+
+  let nh = (h + dh) % 360;
+  if (nh < 0) nh += 360;
+  const ns = clamp(s * (1 + ds), 0, 1);
+  const nl = clamp(l + dl * (1 - Math.abs(l * 2 - 1) * 0.45), 0, 1);
+
+  if (ns < 1e-4) return [nl, nl, nl];
+
+  const q = nl < 0.5 ? nl * (1 + ns) : nl + ns - nl * ns;
+  const p = 2 * nl - q;
+  const hue2rgb = (t: number) => {
+    let tt = t;
+    if (tt < 0) tt += 1;
+    if (tt > 1) tt -= 1;
+    if (tt < 1 / 6) return p + (q - p) * 6 * tt;
+    if (tt < 1 / 2) return q;
+    if (tt < 2 / 3) return p + (q - p) * (2 / 3 - tt) * 6;
+    return p;
+  };
+  const hNorm = nh / 360;
+  return [hue2rgb(hNorm + 1 / 3), hue2rgb(hNorm), hue2rgb(hNorm - 1 / 3)];
+}
+
+/**
+ * Local darkroom Dodge (brighten) & Burn (darken) brush strokes in positive space.
+ */
+function applyDodgeBurnStrokes(
+  data: Uint8ClampedArray,
+  w: number,
+  h: number,
+  strokes: DodgeBurnStroke[]
+) {
+  if (!strokes || strokes.length === 0) return;
+  const minDim = Math.min(w, h);
+  const gainMap = new Float32Array(w * h);
+
+  for (const st of strokes) {
+    const cx = Math.round(st.x * (w - 1));
+    const cy = Math.round(st.y * (h - 1));
+    const rad = Math.max(3, Math.round(st.radius * minDim));
+    const yMin = Math.max(0, cy - rad);
+    const yMax = Math.min(h - 1, cy + rad);
+    const xMin = Math.max(0, cx - rad);
+    const xMax = Math.min(w - 1, cx + rad);
+    const sign = st.mode === 'burn' ? -1 : 1;
+    const amp = sign * clamp(st.strength, 0.05, 0.65) * 0.85;
+    const radSq = rad * rad;
+
+    for (let y = yMin; y <= yMax; y++) {
+      const dy = y - cy;
+      const dy2 = dy * dy;
+      const rowOff = y * w;
+      for (let x = xMin; x <= xMax; x++) {
+        const dx = x - cx;
+        const d2 = dx * dx + dy2;
+        if (d2 > radSq) continue;
+        const t = Math.sqrt(d2) / rad;
+        const falloff = 0.5 * (1 + Math.cos(t * Math.PI));
+        const pIdx = rowOff + x;
+        gainMap[pIdx] = clamp(gainMap[pIdx] + amp * falloff, -1.35, 1.35);
+      }
+    }
+  }
+
+  for (let i = 0; i < w * h; i++) {
+    const g = gainMap[i];
+    if (Math.abs(g) < 0.004) continue;
+    const mult = Math.pow(2, g * 1.15);
+    const idx = i * 4;
+    if (g > 0) {
+      // Soft shoulder roll-off when dodging
+      for (let c = 0; c < 3; c++) {
+        const v = (data[idx + c] / 255) * mult;
+        const rolled = v > 0.82 ? 0.82 + (v - 0.82) / (1 + (v - 0.82) * 1.6) : v;
+        data[idx + c] = clampByte(rolled * 255);
+      }
+    } else {
+      data[idx] = clampByte(data[idx] * mult);
+      data[idx + 1] = clampByte(data[idx + 1] * mult);
+      data[idx + 2] = clampByte(data[idx + 2] * mult);
+    }
+  }
+}
+
+/**
+ * Film halation glow: warm red-orange emulsion scatter around bright highlights.
+ */
+function applyHalation(
+  data: Uint8ClampedArray,
+  w: number,
+  h: number,
+  amount: number
+) {
+  if (amount <= 0 || w < 16 || h < 16) return;
+  const maxSide = Math.max(w, h);
+  const scale = Math.max(1, Math.round(maxSide / 240));
+  const bw = Math.max(8, Math.floor(w / scale));
+  const bh = Math.max(8, Math.floor(h / scale));
+  const bufA = new Float32Array(bw * bh);
+  const bufB = new Float32Array(bw * bh);
+
+  for (let by = 0; by < bh; by++) {
+    const sy = Math.min(h - 1, Math.floor(by * scale + scale * 0.5));
+    for (let bx = 0; bx < bw; bx++) {
+      const sx = Math.min(w - 1, Math.floor(bx * scale + scale * 0.5));
+      const idx = (sy * w + sx) * 4;
+      const lum =
+        (0.299 * data[idx] + 0.587 * data[idx + 1] + 0.114 * data[idx + 2]) / 255;
+      bufA[by * bw + bx] = lum > 0.72 ? (lum - 0.72) / 0.28 : 0;
+    }
+  }
+
+  // Two separable box blur passes on coarse grid
+  const rad = 3;
+  for (let pass = 0; pass < 2; pass++) {
+    // Horizontal A -> B
+    for (let y = 0; y < bh; y++) {
+      const row = y * bw;
+      for (let x = 0; x < bw; x++) {
+        let sum = 0;
+        let cnt = 0;
+        for (let k = -rad; k <= rad; k++) {
+          const xx = x + k;
+          if (xx >= 0 && xx < bw) {
+            sum += bufA[row + xx];
+            cnt++;
+          }
+        }
+        bufB[row + x] = sum / cnt;
+      }
+    }
+    // Vertical B -> A
+    for (let y = 0; y < bh; y++) {
+      for (let x = 0; x < bw; x++) {
+        let sum = 0;
+        let cnt = 0;
+        for (let k = -rad; k <= rad; k++) {
+          const yy = y + k;
+          if (yy >= 0 && yy < bh) {
+            sum += bufB[yy * bw + x];
+            cnt++;
+          }
+        }
+        bufA[y * bw + x] = sum / cnt;
+      }
+    }
+  }
+
+  const strength = (amount / 100) * 0.78 * 255;
+  for (let y = 0; y < h; y++) {
+    const fy = clamp((y / Math.max(1, h - 1)) * (bh - 1), 0, bh - 1.001);
+    const y0 = fy | 0;
+    const wy = fy - y0;
+    for (let x = 0; x < w; x++) {
+      const fx = clamp((x / Math.max(1, w - 1)) * (bw - 1), 0, bw - 1.001);
+      const x0 = fx | 0;
+      const wx = fx - x0;
+
+      const h00 = bufA[y0 * bw + x0];
+      const h10 = bufA[y0 * bw + x0 + 1];
+      const h01 = bufA[(y0 + 1) * bw + x0];
+      const h11 = bufA[(y0 + 1) * bw + x0 + 1];
+
+      const glow =
+        (h00 * (1 - wx) * (1 - wy) +
+          h10 * wx * (1 - wy) +
+          h01 * (1 - wx) * wy +
+          h11 * wx * wy) *
+        strength;
+
+      if (glow < 0.4) continue;
+      const idx = (y * w + x) * 4;
+      data[idx] = clampByte(data[idx] + glow * 1.05);
+      data[idx + 1] = clampByte(data[idx + 1] + glow * 0.34);
+      data[idx + 2] = clampByte(data[idx + 2] + glow * 0.08);
+    }
+  }
+}
+
+/**
+ * Deterministic luminance-weighted silver halide film grain.
+ */
+function applyFilmGrain(
+  data: Uint8ClampedArray,
+  w: number,
+  h: number,
+  amount: number,
+  size: number,
+  isBW: boolean
+) {
+  if (amount <= 0) return;
+  const resScale = Math.max(1, Math.max(w, h) / 1100);
+  const cellSize = Math.max(
+    1,
+    Math.round((1 + (clamp(size, 0, 100) / 100) * 1.7) * resScale)
+  );
+  const amp = (clamp(amount, 0, 100) / 100) * 34;
+
+  const hash2d = (gx: number, gy: number, seed: number): number => {
+    let n = (gx * 374761393 + gy * 668265263 + seed * 1442695041) | 0;
+    n = (n ^ (n >>> 13)) * 1274126177;
+    n = n ^ (n >>> 16);
+    return ((n >>> 0) / 4294967295);
+  };
+
+  for (let y = 0; y < h; y++) {
+    const gy = (y / cellSize) | 0;
+    const rowOff = y * w;
+    for (let x = 0; x < w; x++) {
+      const gx = (x / cellSize) | 0;
+      const idx = (rowOff + x) * 4;
+      const lum =
+        (0.299 * data[idx] + 0.587 * data[idx + 1] + 0.114 * data[idx + 2]) / 255;
+      const midWeight = 0.25 + 0.75 * (4 * lum * (1 - lum));
+
+      const nLuma = (hash2d(gx, gy, 11) + hash2d(gx + 17, gy + 31, 29) - 1) * amp * midWeight;
+      if (isBW) {
+        data[idx] = clampByte(data[idx] + nLuma);
+        data[idx + 1] = clampByte(data[idx + 1] + nLuma);
+        data[idx + 2] = clampByte(data[idx + 2] + nLuma);
+      } else {
+        const chromaSpread = amp * 0.18 * midWeight;
+        const nr = (hash2d(gx, gy, 47) - 0.5) * chromaSpread;
+        const nb = (hash2d(gx, gy, 83) - 0.5) * chromaSpread;
+        data[idx] = clampByte(data[idx] + nLuma + nr);
+        data[idx + 1] = clampByte(data[idx + 1] + nLuma);
+        data[idx + 2] = clampByte(data[idx + 2] + nLuma + nb);
+      }
+    }
+  }
+}
+
 export interface ProcessResult {
   imageData: ImageData;
   histogram: HistogramData;
@@ -965,7 +1363,8 @@ export function processNegativeImageData(
     settings.rotate,
     settings.flipH,
     ignorePerspective ? null : settings.perspective,
-    ignoreCrop ? null : settings.crop
+    ignoreCrop ? null : settings.crop,
+    ignorePerspective ? 0 : settings.straighten ?? 0
   );
   const { width, height, data } = oriented;
   const totalPixels = width * height;
@@ -1251,6 +1650,11 @@ export function processNegativeImageData(
   const histOutB = new Uint32Array(256);
   const histOutL = new Uint32Array(256);
 
+  const filmChar = settings.filmCharacter ?? createDefaultFilmCharacter();
+  const fadeLift = clamp(filmChar.fade ?? 0, 0, 100) / 100 * 0.14;
+  const hslSettings = settings.hsl;
+  const useHsl = !isBW && hasActiveHsl(hslSettings);
+
   for (let i = 0; i < totalPixels; i++) {
     const idx = i * 4;
     let r: number;
@@ -1350,11 +1754,26 @@ export function processNegativeImageData(
         g = clamp(lum + (g - lum) * satMult, 0, 1);
         b = clamp(lum + (b - lum) * satMult, 0, 1);
       }
+
+      if (useHsl && hslSettings) {
+        [r, g, b] = applyHslToRgb(r, g, b, hslSettings);
+      }
+    }
+
+    if (fadeLift > 0) {
+      r = fadeLift + r * (1 - fadeLift * 0.92);
+      g = fadeLift + g * (1 - fadeLift * 0.92);
+      b = fadeLift + b * (1 - fadeLift * 0.92);
     }
 
     data[idx] = clampByte(r * 255);
     data[idx + 1] = clampByte(g * 255);
     data[idx + 2] = clampByte(b * 255);
+  }
+
+  // Apply non-destructive local Dodge & Burn strokes
+  if (!ignoreCrop && !ignorePerspective && (settings.dodgeBurnStrokes?.length ?? 0) > 0) {
+    applyDodgeBurnStrokes(data, width, height, settings.dodgeBurnStrokes ?? []);
   }
 
   if (settings.clarity > 0) {
@@ -1368,6 +1787,14 @@ export function processNegativeImageData(
 
   if ((settings.sharpen ?? 0) > 0) {
     applySharpen(data, width, height, settings.sharpen);
+  }
+
+  if ((filmChar.halation ?? 0) > 0) {
+    applyHalation(data, width, height, filmChar.halation);
+  }
+
+  if ((filmChar.grainAmount ?? 0) > 0) {
+    applyFilmGrain(data, width, height, filmChar.grainAmount, filmChar.grainSize ?? 35, isBW);
   }
 
   let clipBlack = 0;
@@ -1425,7 +1852,8 @@ export function sampleBaseColorAt(
     settings.rotate,
     settings.flipH,
     settings.perspective,
-    settings.crop
+    settings.crop,
+    settings.straighten ?? 0
   );
   const cx = clamp(Math.round(normX * (oriented.width - 1)), 0, oriented.width - 1);
   const cy = clamp(Math.round(normY * (oriented.height - 1)), 0, oriented.height - 1);
@@ -1503,12 +1931,192 @@ export function computeWhiteBalanceFromPositive(
   };
 }
 
+/**
+ * Generates an industry-standard 3D .cube LUT capturing the active positive look grading
+ * (exposure, contrast, highlights/shadows, curves, split tone, WB, HSL, fade, and B&W toning).
+ */
+export function generateCubeLutString(
+  settings: GradingSettings,
+  title = 'NEGORA Film Look',
+  size = 33
+): string {
+  const safeTitle = title.replace(/[\r\n"]/g, '').trim().slice(0, 60) || 'NEGORA Look';
+  const lines: string[] = [
+    `TITLE "${safeTitle}"`,
+    `LUT_3D_SIZE ${size}`,
+    'DOMAIN_MIN 0.0 0.0 0.0',
+    'DOMAIN_MAX 1.0 1.0 1.0',
+  ];
+
+  const isBW =
+    settings.profile === 'bw-silver' || settings.profile === 'bw-selenium';
+  const exposureMult = Math.pow(2, settings.exposure * 0.72);
+  const contrastFactor = settings.contrast / 50;
+  const hlAmt = settings.highlights / 100;
+  const shAmt = settings.shadows / 100;
+  const tempShift = (settings.temperature / 100) * 0.18;
+  const tintShift = (settings.tint / 100) * 0.14;
+  const satMult = 1 + settings.saturation / 100;
+
+  let profR = 1.0;
+  let profG = 1.0;
+  let profB = 1.0;
+  if (settings.profile === 'kodak-warm') {
+    profR = 1.04;
+    profG = 1.01;
+    profB = 0.95;
+  } else if (settings.profile === 'fuji-cool') {
+    profR = 0.97;
+    profG = 1.02;
+    profB = 1.03;
+  }
+
+  const curveMaster = buildCurveLut(settings.curves?.master ?? []);
+  const curveR = buildCurveLut(settings.curves?.r ?? []);
+  const curveG = buildCurveLut(settings.curves?.g ?? []);
+  const curveB = buildCurveLut(settings.curves?.b ?? []);
+
+  const st = settings.splitTone ?? createDefaultSplitTone();
+  const shDelta = wheelOffsetToRgbDelta(st.shadows, 0.24);
+  const midDelta = wheelOffsetToRgbDelta(st.midtones, 0.22);
+  const hlDelta = wheelOffsetToRgbDelta(st.highlights, 0.24);
+  const hasSplitTone =
+    st.shadows.x !== 0 ||
+    st.shadows.y !== 0 ||
+    st.midtones.x !== 0 ||
+    st.midtones.y !== 0 ||
+    st.highlights.x !== 0 ||
+    st.highlights.y !== 0;
+
+  const hslSettings = settings.hsl;
+  const useHsl = !isBW && hasActiveHsl(hslSettings);
+  const fadeLift = (clamp(settings.filmCharacter?.fade ?? 0, 0, 100) / 100) * 0.14;
+
+  const gradeCh = (v: number, profMult: number, chCurve: Float32Array) => {
+    let n = v * exposureMult * profMult;
+    if (n > 0.85) n = 0.85 + (n - 0.85) / (1 + (n - 0.85) * 1.15);
+    n = clamp(n, 0, 1);
+    if (contrastFactor > 0) {
+      const s = n * n * (3 - 2 * n);
+      n = n + (s - n) * contrastFactor * 0.72;
+    } else if (contrastFactor < 0) {
+      n = 0.5 + (n - 0.5) * (1 + contrastFactor * 0.52);
+    }
+    n = curveMaster[clampByte(n * 255)];
+    n = chCurve[clampByte(n * 255)];
+    return clamp(n, 0, 1);
+  };
+
+  const activeBwTone: BwToneStyle =
+    settings.bwTone && settings.bwTone !== 'none'
+      ? settings.bwTone
+      : settings.profile === 'bw-selenium'
+        ? 'selenium'
+        : 'none';
+
+  // Standard .cube order: B outer, G middle, R inner
+  for (let bi = 0; bi < size; bi++) {
+    const bIn = bi / (size - 1);
+    for (let gi = 0; gi < size; gi++) {
+      const gIn = gi / (size - 1);
+      for (let ri = 0; ri < size; ri++) {
+        const rIn = ri / (size - 1);
+        let r: number;
+        let g: number;
+        let b: number;
+
+        if (isBW) {
+          const yIn = 0.299 * rIn + 0.587 * gIn + 0.114 * bIn;
+          const v = gradeCh(yIn, 1, curveMaster);
+          r = g = b = v;
+        } else {
+          r = gradeCh(rIn, profR, curveR);
+          g = gradeCh(gIn, profG, curveG);
+          b = gradeCh(bIn, profB, curveB);
+        }
+
+        if (hlAmt !== 0 || shAmt !== 0) {
+          const lum = 0.299 * r + 0.587 * g + 0.114 * b;
+          const delta =
+            shAmt * 0.28 * (1 - lum) * (1 - lum) + hlAmt * 0.28 * lum * lum;
+          r = clamp(r + delta, 0, 1);
+          g = clamp(g + delta, 0, 1);
+          b = clamp(b + delta, 0, 1);
+        }
+
+        if (hasSplitTone && !isBW) {
+          const lum = 0.299 * r + 0.587 * g + 0.114 * b;
+          const shM = (1 - lum) * (1 - lum);
+          const midM = 4 * lum * (1 - lum) * 0.55;
+          const hlM = lum * lum;
+          r = clamp(r + shDelta.dr * shM + midDelta.dr * midM + hlDelta.dr * hlM, 0, 1);
+          g = clamp(g + shDelta.dg * shM + midDelta.dg * midM + hlDelta.dg * hlM, 0, 1);
+          b = clamp(b + shDelta.db * shM + midDelta.db * midM + hlDelta.db * hlM, 0, 1);
+        }
+
+        if (isBW && activeBwTone === 'selenium') {
+          const lum = r;
+          const coolShadow = (1 - lum) * 0.048;
+          const warmMid = Math.sin(lum * Math.PI) * 0.028;
+          r = clamp(lum + warmMid + tempShift * 0.5, 0, 1);
+          g = clamp(lum - coolShadow * 0.35 - tintShift * 0.3, 0, 1);
+          b = clamp(lum + coolShadow - tempShift * 0.5, 0, 1);
+        } else if (isBW && activeBwTone === 'sepia') {
+          const lum = r;
+          const midWeight = Math.sin(lum * Math.PI);
+          r = clamp(lum + midWeight * 0.095 + (1 - lum) * 0.03 + tempShift * 0.4, 0, 1);
+          g = clamp(lum + midWeight * 0.032 - tintShift * 0.25, 0, 1);
+          b = clamp(lum - midWeight * 0.088 - (1 - lum) * 0.025 - tempShift * 0.4, 0, 1);
+        } else if (isBW && activeBwTone === 'cyanotype') {
+          const lum = r;
+          const shadowDeep = (1 - lum) * 0.14;
+          const midTint = Math.sin(lum * Math.PI) * 0.08;
+          r = clamp(lum - shadowDeep * 0.82 - midTint * 0.7, 0, 1);
+          g = clamp(lum - shadowDeep * 0.22 + midTint * 0.12, 0, 1);
+          b = clamp(lum + shadowDeep * 0.28 + midTint * 0.85, 0, 1);
+        } else if (!isBW) {
+          if (tempShift !== 0 || tintShift !== 0) {
+            r = clamp(r * (1 + tempShift + tintShift * 0.5), 0, 1);
+            g = clamp(g * (1 - tintShift * 0.7), 0, 1);
+            b = clamp(b * (1 - tempShift + tintShift * 0.5), 0, 1);
+          }
+          if (satMult !== 1) {
+            const lum = 0.299 * r + 0.587 * g + 0.114 * b;
+            r = clamp(lum + (r - lum) * satMult, 0, 1);
+            g = clamp(lum + (g - lum) * satMult, 0, 1);
+            b = clamp(lum + (b - lum) * satMult, 0, 1);
+          }
+          if (useHsl && hslSettings) {
+            [r, g, b] = applyHslToRgb(r, g, b, hslSettings);
+          }
+        }
+
+        if (fadeLift > 0) {
+          r = fadeLift + r * (1 - fadeLift * 0.92);
+          g = fadeLift + g * (1 - fadeLift * 0.92);
+          b = fadeLift + b * (1 - fadeLift * 0.92);
+        }
+
+        lines.push(`${r.toFixed(6)} ${g.toFixed(6)} ${b.toFixed(6)}`);
+      }
+    }
+  }
+
+  return `${lines.join('\n')}\n`;
+}
+
 export async function exportFullResolutionBlob(
   sourceCanvas: HTMLCanvasElement,
   settings: GradingSettings,
   format: 'image/png' | 'image/jpeg',
-  exifMeta?: ExifMetadataInput
+  exifMeta?: ExifMetadataInput,
+  exportOptions?: Partial<ExportOptions>
 ): Promise<Blob> {
+  const opts: ExportOptions = {
+    ...DEFAULT_EXPORT_OPTIONS,
+    ...exportOptions,
+  };
+
   const srcCtx = sourceCanvas.getContext('2d');
   if (!srcCtx) throw new Error('Canvas 2D context unavailable');
 
@@ -1522,24 +2130,70 @@ export async function exportFullResolutionBlob(
   if (!imgCtx) throw new Error('Export canvas 2D context unavailable');
   imgCtx.putImageData(imageData, 0, 0);
 
-  let outCanvas = imgCanvas;
+  let workingCanvas = imgCanvas;
+  if (
+    opts.maxEdgePx &&
+    opts.maxEdgePx > 0 &&
+    Math.max(imgCanvas.width, imgCanvas.height) > opts.maxEdgePx
+  ) {
+    const scale = opts.maxEdgePx / Math.max(imgCanvas.width, imgCanvas.height);
+    const resized = document.createElement('canvas');
+    resized.width = Math.max(1, Math.round(imgCanvas.width * scale));
+    resized.height = Math.max(1, Math.round(imgCanvas.height * scale));
+    const rCtx = resized.getContext('2d');
+    if (rCtx) {
+      rCtx.imageSmoothingEnabled = true;
+      rCtx.imageSmoothingQuality = 'high';
+      rCtx.drawImage(imgCanvas, 0, 0, resized.width, resized.height);
+      workingCanvas = resized;
+    }
+  }
+
+  let outCanvas = workingCanvas;
   if (settings.printBorder && settings.printBorder !== 'none') {
+    const pct = clamp(opts.borderThicknessPct, 2, 14) / 100;
     const borderPx = Math.max(
       24,
-      Math.round(Math.min(imageData.width, imageData.height) * 0.06)
+      Math.round(Math.min(workingCanvas.width, workingCanvas.height) * pct)
     );
+    const bottomExtra = opts.includeRebateCaption
+      ? Math.max(18, Math.round(borderPx * 0.55))
+      : 0;
     const framed = document.createElement('canvas');
-    framed.width = imageData.width + borderPx * 2;
-    framed.height = imageData.height + borderPx * 2;
+    framed.width = workingCanvas.width + borderPx * 2;
+    framed.height = workingCanvas.height + borderPx * 2 + bottomExtra;
     const fCtx = framed.getContext('2d');
     if (fCtx) {
       fCtx.fillStyle = settings.printBorder === 'white' ? '#F6F5F0' : '#0E0E10';
       fCtx.fillRect(0, 0, framed.width, framed.height);
-      fCtx.drawImage(imgCanvas, borderPx, borderPx);
+      fCtx.drawImage(workingCanvas, borderPx, borderPx);
+
+      if (opts.includeRebateCaption) {
+        const captionParts = [
+          exifMeta?.filmStock || exifMeta?.title || 'NEGORA',
+          exifMeta?.camera,
+          exifMeta?.iso ? `ISO ${exifMeta.iso}` : undefined,
+        ].filter(Boolean);
+        const caption = captionParts.join(' · ').toUpperCase();
+        if (caption) {
+          const fontSize = Math.max(12, Math.round(borderPx * 0.36));
+          fCtx.font = `500 ${fontSize}px ui-monospace, SFMono-Regular, Menlo, monospace`;
+          fCtx.textAlign = 'center';
+          fCtx.textBaseline = 'middle';
+          fCtx.fillStyle =
+            settings.printBorder === 'white' ? '#52525B' : '#A1A1AA';
+          fCtx.fillText(
+            caption,
+            framed.width / 2,
+            borderPx + workingCanvas.height + (borderPx + bottomExtra) * 0.5
+          );
+        }
+      }
       outCanvas = framed;
     }
   }
 
+  const quality = clamp(opts.jpegQuality, 0.65, 1.0);
   const blob = await new Promise<Blob>((resolve, reject) => {
     outCanvas.toBlob(
       (b) => {
@@ -1547,7 +2201,7 @@ export async function exportFullResolutionBlob(
         else reject(new Error('Failed to encode exported image'));
       },
       format,
-      format === 'image/jpeg' ? 0.95 : undefined
+      format === 'image/jpeg' ? quality : undefined
     );
   });
 

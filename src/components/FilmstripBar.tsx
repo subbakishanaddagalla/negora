@@ -11,6 +11,7 @@ interface FilmstripBarProps {
   onImportClick: () => void;
   onOpenCamera: () => void;
   onBatchAutoFrame: () => void;
+  showCameraScanner?: boolean;
 }
 
 function FilmstripThumb({
@@ -106,6 +107,7 @@ export function FilmstripBar({
   onImportClick,
   onOpenCamera,
   onBatchAutoFrame,
+  showCameraScanner = true,
 }: FilmstripBarProps) {
   return (
     <div className="h-[62px] lg:h-[82px] shrink-0 border-y lg:border-b-0 lg:border-t border-white/[0.06] bg-[#101012] px-3 sm:px-5 flex items-center gap-2 lg:gap-2.5 overflow-x-auto darkroom-scroll">
@@ -130,16 +132,18 @@ export function FilmstripBar({
         <Plus className="w-4 h-4" aria-hidden="true" />
       </button>
 
-      <button
-        type="button"
-        onClick={onOpenCamera}
-        title="Scan negative with camera"
-        aria-label="Scan negative with camera"
-        className="shrink-0 h-[46px] w-[48px] lg:h-[58px] lg:w-[58px] rounded border border-dashed border-white/15 hover:border-[#E59A28]/70 text-zinc-500 hover:text-zinc-200 flex flex-col items-center justify-center gap-0.5 lg:gap-1 transition-colors"
-      >
-        <Camera className="w-3.5 h-3.5 lg:w-4 lg:h-4" aria-hidden="true" />
-        <span className="text-[9px] lg:text-[10px] leading-none">Scan</span>
-      </button>
+      {showCameraScanner && (
+        <button
+          type="button"
+          onClick={onOpenCamera}
+          title="Scan negative with camera"
+          aria-label="Scan negative with camera"
+          className="shrink-0 h-[46px] w-[48px] lg:h-[58px] lg:w-[58px] rounded border border-dashed border-white/15 hover:border-[#E59A28]/70 text-zinc-500 hover:text-zinc-200 flex flex-col items-center justify-center gap-0.5 lg:gap-1 transition-colors"
+        >
+          <Camera className="w-3.5 h-3.5 lg:w-4 lg:h-4" aria-hidden="true" />
+          <span className="text-[9px] lg:text-[10px] leading-none">Scan</span>
+        </button>
+      )}
 
       {frames.length > 1 && (
         <button

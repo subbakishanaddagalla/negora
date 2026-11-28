@@ -1,7 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type {
   ActiveTool,
+  CropAspectPreset,
   CropRect,
+  DodgeBurnStroke,
   GradingSettings,
   HealStroke,
   NegativeFrame,
@@ -15,11 +17,14 @@ import {
   processNegativeImageData,
 } from '../lib/negativeProcessor';
 import {
+  AlertTriangle,
+  Brush,
   Camera,
   Columns2,
   Crop,
   Eraser,
   FlipHorizontal2,
+  Grid3X3,
   MoveHorizontal,
   Pipette,
   Redo2,
@@ -47,24 +52,43 @@ interface ViewportCanvasProps {
   onRedo: () => void;
   onRotate: () => void;
   onFlipH: () => void;
+  onUpdateStraighten: (angleDeg: number, recordHistory?: boolean) => void;
   onUpdateCrop: (crop: CropRect | null) => void;
   onUpdatePerspective: (quad: PerspectiveQuad | null) => void;
   onSplitStrip: (rects: CropRect[]) => void;
   onBeginHealStroke: () => void;
   onAddHealStroke: (stroke: HealStroke) => void;
   onClearHealStrokes: () => void;
+  onBeginDodgeBurnStroke: () => void;
+  onAddDodgeBurnStroke: (stroke: DodgeBurnStroke) => void;
+  onClearDodgeBurnStrokes: () => void;
   onPickBase: (normX: number, normY: number) => void;
   onPickGray: (normX: number, normY: number) => void;
   onImportFiles: (files: FileList | File[]) => void;
   onReloadSamples: () => void;
   onOpenCamera: () => void;
+  showCameraScanner?: boolean;
   isLoadingSamples: boolean;
   abSnapshotSettings: GradingSettings | null;
   isAbCompare: boolean;
   onSetAbSnapshot: () => void;
   onToggleAbCompare: () => void;
   onClearAbSnapshot: () => void;
+  showClipping: boolean;
+  onToggleClipping: () => void;
+  showGrid: boolean;
+  onToggleGrid: () => void;
+  borderThicknessPct?: number;
 }
+
+const ASPECT_RATIOS: { id: CropAspectPreset; label: string; ratio: number | null }[] = [
+  { id: 'free', label: 'Free', ratio: null },
+  { id: '3:2', label: '3:2', ratio: 3 / 2 },
+  { id: '4:5', label: '4:5', ratio: 4 / 5 },
+  { id: '1:1', label: '1:1', ratio: 1 },
+  { id: '6:7', label: '6:7', ratio: 6 / 7 },
+  { id: '16:9', label: '16:9', ratio: 16 / 9 },
+];
 
 type CropDragHandle = 'move' | 'nw' | 'ne' | 'sw' | 'se';
 type QuadCornerKey = keyof PerspectiveQuad;
@@ -89,28 +113,40 @@ export function ViewportCanvas({
   onRedo,
   onRotate,
   onFlipH,
+  onUpdateStraighten,
   onUpdateCrop,
   onUpdatePerspective,
   onSplitStrip,
   onBeginHealStroke,
   onAddHealStroke,
   onClearHealStrokes,
+  onBeginDodgeBurnStroke,
+  onAddDodgeBurnStroke,
+  onClearDodgeBurnStrokes,
   onPickBase,
   onPickGray,
   onImportFiles,
   onReloadSamples,
   onOpenCamera,
+  showCameraScanner = true,
   isLoadingSamples,
   abSnapshotSettings,
   isAbCompare,
   onSetAbSnapshot,
   onToggleAbCompare,
   onClearAbSnapshot,
+  showClipping,
+  onToggleClipping,
+  showGrid,
+  onToggleGrid,
+  borderThicknessPct = 6,
 }: ViewportCanvasProps) {
   const negCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const posCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const clipCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const sideNegCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const sidePosCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const sideClipCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const stageRef = useRef<HTMLDivElement | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
 
@@ -135,7 +171,10 @@ export function ViewportCanvas({
   const isCropping = activeTool === 'crop' && Boolean(frame);
   const isWarping = activeTool === 'perspective' && Boolean(frame);
   const isHealing = activeTool === 'heal' && Boolean(frame);
+  const isDodgeBurn = activeTool === 'dodge-burn' && Boolean(frame);
 
+  const [cropAspect, setCropAspect] = useState<CropAspectPreset>('free');
+  const [isAdjustingStraighten, setIsAdjustingStraighten] = useState(false);
   const [draftCrop, setDraftCrop] = useState<CropRect>({
     x: 0.06,
     y: 0.1,
@@ -156,9 +195,16 @@ export function ViewportCanvas({
 
   // Spot healing brush state
   const [healBrushRadius, setHealBrushRadius] = useState<number>(0.022);
-  const [healHover, setHealHover] = useState<{ x: number; y: number } | null>(null);
+  const [brushHover, setBrushHover] = useState<{ x: number; y: number } | null>(null);
   const [isPaintingHeal, setIsPaintingHeal] = useState(false);
   const lastHealPtRef = useRef<{ x: number; y: number } | null>(null);
+
+  // Dodge & Burn brush state
+  const [dodgeBurnMode, setDodgeBurnMode] = useState<'dodge' | 'burn'>('dodge');
+  const [dodgeBurnRadius, setDodgeBurnRadius] = useState<number>(0.055);
+  const [dodgeBurnStrength, setDodgeBurnStrength] = useState<number>(0.24);
+  const [isPaintingDodgeBurn, setIsPaintingDodgeBurn] = useState(false);
+  const lastDbPtRef = useRef<{ x: number; y: number } | null>(null);
 
   useEffect(() => {
     const el = stageRef.current;
@@ -181,9 +227,10 @@ export function ViewportCanvas({
     setPan({ x: 0, y: 0 });
     setZoom(1);
     setCropNote(null);
+    setCropAspect('free');
   }, [frame?.id]);
 
-  // Initialize draft crop/perspective when switching into crop/warp tool
+  // Initialize draft crop/perspective when switching into crop/warp/brush tools
   useEffect(() => {
     if (!frame) return;
     if (activeTool === 'crop') {
@@ -191,6 +238,7 @@ export function ViewportCanvas({
       setZoom(1);
       setPan({ x: 0, y: 0 });
       setCropNote(null);
+      setCropAspect('free');
       setDraftCrop(
         frame.settings.crop ?? { x: 0.06, y: 0.1, w: 0.84, h: 0.8 }
       );
@@ -199,7 +247,7 @@ export function ViewportCanvas({
       setZoom(1);
       setPan({ x: 0, y: 0 });
       setDraftQuad(frame.settings.perspective ?? DEFAULT_PERSPECTIVE);
-    } else if (activeTool === 'heal') {
+    } else if (activeTool === 'heal' || activeTool === 'dodge-burn') {
       if (viewMode === 'negative' || viewMode === 'side-by-side') {
         onChangeViewMode('positive');
       }
@@ -245,7 +293,8 @@ export function ViewportCanvas({
         frame.settings.rotate,
         frame.settings.flipH,
         isWarping ? null : frame.settings.perspective,
-        isCropping || isWarping ? null : frame.settings.crop
+        isCropping || isWarping ? null : frame.settings.crop,
+        isWarping ? 0 : frame.settings.straighten ?? 0
       );
 
     const targets = [negCanvasRef.current, sideNegCanvasRef.current];
@@ -260,6 +309,7 @@ export function ViewportCanvas({
     frame,
     abSnapshotData,
     frame?.settings.rotate,
+    frame?.settings.straighten,
     frame?.settings.flipH,
     frame?.settings.perspective,
     frame?.settings.crop,
@@ -279,6 +329,46 @@ export function ViewportCanvas({
       if (ctx) ctx.putImageData(activeDisplayData, 0, 0);
     }
   }, [activeDisplayData, viewMode]);
+
+  useEffect(() => {
+    const clipTargets = [clipCanvasRef.current, sideClipCanvasRef.current];
+    if (!showClipping || !activeDisplayData || viewMode === 'negative' || isCropping || isWarping) {
+      for (const c of clipTargets) {
+        if (!c) continue;
+        const ctx = c.getContext('2d');
+        if (ctx) ctx.clearRect(0, 0, c.width, c.height);
+      }
+      return;
+    }
+
+    const { width, height, data } = activeDisplayData;
+    const mask = new ImageData(width, height);
+    const out = mask.data;
+    for (let i = 0; i < data.length; i += 4) {
+      const r = data[i];
+      const g = data[i + 1];
+      const b = data[i + 2];
+      if (r >= 253 && g >= 253 && b >= 253) {
+        out[i] = 239;
+        out[i + 1] = 68;
+        out[i + 2] = 68;
+        out[i + 3] = 225;
+      } else if (r <= 2 && g <= 2 && b <= 2) {
+        out[i] = 59;
+        out[i + 1] = 130;
+        out[i + 2] = 246;
+        out[i + 3] = 225;
+      }
+    }
+
+    for (const c of clipTargets) {
+      if (!c) continue;
+      c.width = width;
+      c.height = height;
+      const ctx = c.getContext('2d');
+      if (ctx) ctx.putImageData(mask, 0, 0);
+    }
+  }, [showClipping, activeDisplayData, viewMode, isCropping, isWarping]);
 
   useEffect(() => {
     if (!isDraggingWipe) return;
@@ -322,6 +412,9 @@ export function ViewportCanvas({
     };
   }, [isPanning]);
 
+  const activeRatioObj = ASPECT_RATIOS.find((a) => a.id === cropAspect);
+  const targetPixelAspect = activeRatioObj?.ratio ?? null;
+
   useEffect(() => {
     if (!cropDrag) return;
     const handleMove = (e: PointerEvent) => {
@@ -331,47 +424,78 @@ export function ViewportCanvas({
       const dy = (e.clientY - cropDrag.startY) / Math.max(1, rect.height);
       const sc = cropDrag.startCrop;
       const minSize = 0.08;
+      const imgAspect = rect.width / Math.max(1, rect.height);
+      // normRatio = w_norm / h_norm needed for targetPixelAspect
+      const normRatio = targetPixelAspect ? targetPixelAspect / imgAspect : null;
 
       if (cropDrag.handle === 'move') {
         const nx = Math.max(0, Math.min(1 - sc.w, sc.x + dx));
         const ny = Math.max(0, Math.min(1 - sc.h, sc.y + dy));
         setDraftCrop({ x: nx, y: ny, w: sc.w, h: sc.h });
       } else if (cropDrag.handle === 'nw') {
-        const nx = Math.max(0, Math.min(sc.x + sc.w - minSize, sc.x + dx));
-        const ny = Math.max(0, Math.min(sc.y + sc.h - minSize, sc.y + dy));
-        setDraftCrop({
-          x: nx,
-          y: ny,
-          w: sc.x + sc.w - nx,
-          h: sc.y + sc.h - ny,
-        });
+        let nx = Math.max(0, Math.min(sc.x + sc.w - minSize, sc.x + dx));
+        let ny = Math.max(0, Math.min(sc.y + sc.h - minSize, sc.y + dy));
+        let nw = sc.x + sc.w - nx;
+        let nh = sc.y + sc.h - ny;
+        if (normRatio) {
+          nh = nw / normRatio;
+          ny = sc.y + sc.h - nh;
+          if (ny < 0) {
+            ny = 0;
+            nh = sc.y + sc.h;
+            nw = nh * normRatio;
+            nx = sc.x + sc.w - nw;
+          }
+        }
+        if (nw >= minSize && nh >= minSize) {
+          setDraftCrop({ x: nx, y: ny, w: nw, h: nh });
+        }
       } else if (cropDrag.handle === 'ne') {
-        const ny = Math.max(0, Math.min(sc.y + sc.h - minSize, sc.y + dy));
-        const nw = Math.max(minSize, Math.min(1 - sc.x, sc.w + dx));
-        setDraftCrop({
-          x: sc.x,
-          y: ny,
-          w: nw,
-          h: sc.y + sc.h - ny,
-        });
+        let ny = Math.max(0, Math.min(sc.y + sc.h - minSize, sc.y + dy));
+        let nw = Math.max(minSize, Math.min(1 - sc.x, sc.w + dx));
+        let nh = sc.y + sc.h - ny;
+        if (normRatio) {
+          nh = nw / normRatio;
+          ny = sc.y + sc.h - nh;
+          if (ny < 0) {
+            ny = 0;
+            nh = sc.y + sc.h;
+            nw = Math.min(1 - sc.x, nh * normRatio);
+            nh = nw / normRatio;
+            ny = sc.y + sc.h - nh;
+          }
+        }
+        if (nw >= minSize && nh >= minSize) {
+          setDraftCrop({ x: sc.x, y: ny, w: nw, h: nh });
+        }
       } else if (cropDrag.handle === 'sw') {
-        const nx = Math.max(0, Math.min(sc.x + sc.w - minSize, sc.x + dx));
-        const nh = Math.max(minSize, Math.min(1 - sc.y, sc.h + dy));
-        setDraftCrop({
-          x: nx,
-          y: sc.y,
-          w: sc.x + sc.w - nx,
-          h: nh,
-        });
+        let nx = Math.max(0, Math.min(sc.x + sc.w - minSize, sc.x + dx));
+        let nw = sc.x + sc.w - nx;
+        let nh = Math.max(minSize, Math.min(1 - sc.y, sc.h + dy));
+        if (normRatio) {
+          nh = nw / normRatio;
+          if (sc.y + nh > 1) {
+            nh = 1 - sc.y;
+            nw = nh * normRatio;
+            nx = sc.x + sc.w - nw;
+          }
+        }
+        if (nw >= minSize && nh >= minSize) {
+          setDraftCrop({ x: nx, y: sc.y, w: nw, h: nh });
+        }
       } else if (cropDrag.handle === 'se') {
-        const nw = Math.max(minSize, Math.min(1 - sc.x, sc.w + dx));
-        const nh = Math.max(minSize, Math.min(1 - sc.y, sc.h + dy));
-        setDraftCrop({
-          x: sc.x,
-          y: sc.y,
-          w: nw,
-          h: nh,
-        });
+        let nw = Math.max(minSize, Math.min(1 - sc.x, sc.w + dx));
+        let nh = Math.max(minSize, Math.min(1 - sc.y, sc.h + dy));
+        if (normRatio) {
+          nh = nw / normRatio;
+          if (sc.y + nh > 1) {
+            nh = 1 - sc.y;
+            nw = nh * normRatio;
+          }
+        }
+        if (nw >= minSize && nh >= minSize) {
+          setDraftCrop({ x: sc.x, y: sc.y, w: nw, h: nh });
+        }
       }
     };
     const handleUp = () => setCropDrag(null);
@@ -384,7 +508,7 @@ export function ViewportCanvas({
       window.removeEventListener('pointerup', handleUp);
       window.removeEventListener('pointercancel', handleUp);
     };
-  }, [cropDrag]);
+  }, [cropDrag, targetPixelAspect]);
 
   useEffect(() => {
     if (!quadDragCorner) return;
@@ -411,10 +535,12 @@ export function ViewportCanvas({
   }, [quadDragCorner]);
 
   useEffect(() => {
-    if (!isPaintingHeal) return;
+    if (!isPaintingHeal && !isPaintingDodgeBurn) return;
     const handleUp = () => {
       setIsPaintingHeal(false);
+      setIsPaintingDodgeBurn(false);
       lastHealPtRef.current = null;
+      lastDbPtRef.current = null;
     };
     window.addEventListener('pointerup', handleUp);
     window.addEventListener('pointercancel', handleUp);
@@ -422,10 +548,34 @@ export function ViewportCanvas({
       window.removeEventListener('pointerup', handleUp);
       window.removeEventListener('pointercancel', handleUp);
     };
-  }, [isPaintingHeal]);
+  }, [isPaintingHeal, isPaintingDodgeBurn]);
+
+  const handleSelectAspectRatio = (preset: CropAspectPreset) => {
+    setCropAspect(preset);
+    const meta = ASPECT_RATIOS.find((a) => a.id === preset);
+    if (!meta || !meta.ratio || !activeDisplayData) return;
+
+    const imgAspect = activeDisplayData.width / Math.max(1, activeDisplayData.height);
+    const normRatio = meta.ratio / imgAspect;
+    const maxBox = 0.92;
+    let w = maxBox;
+    let h = w / normRatio;
+    if (h > maxBox) {
+      h = maxBox;
+      w = h * normRatio;
+    }
+    setDraftCrop({
+      x: (1 - w) * 0.5,
+      y: (1 - h) * 0.5,
+      w,
+      h,
+    });
+    setCropNote(`Locked aspect ratio to ${meta.label}.`);
+  };
 
   const handleAutoFrame = () => {
     if (!frame) return;
+    setCropAspect('free');
     const detected = detectFrameCrop(frame.previewSourceData, frame.settings);
     setDraftCrop(detected);
     setCropNote('Detected inner frame boundaries.');
@@ -463,11 +613,34 @@ export function ViewportCanvas({
     });
   };
 
+  const emitDodgeBurnAtClient = (clientX: number, clientY: number) => {
+    if (!containerRef.current) return;
+    const rect = containerRef.current.getBoundingClientRect();
+    const nx = (clientX - rect.left) / Math.max(1, rect.width);
+    const ny = (clientY - rect.top) / Math.max(1, rect.height);
+    if (nx < 0 || nx > 1 || ny < 0 || ny > 1) return;
+
+    const last = lastDbPtRef.current;
+    if (last && Math.hypot(nx - last.x, ny - last.y) < dodgeBurnRadius * 0.52) {
+      return;
+    }
+    lastDbPtRef.current = { x: nx, y: ny };
+    onAddDodgeBurnStroke({
+      id: `db-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      mode: dodgeBurnMode,
+      x: nx,
+      y: ny,
+      radius: dodgeBurnRadius,
+      strength: dodgeBurnStrength,
+    });
+  };
+
   const handleCanvasClick = (e: React.MouseEvent<HTMLDivElement>) => {
     if (
       isCropping ||
       isWarping ||
       isHealing ||
+      isDodgeBurn ||
       activeTool === 'pan' ||
       !containerRef.current ||
       !frame
@@ -487,7 +660,14 @@ export function ViewportCanvas({
   };
 
   const handleStagePointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
-    if (isCropping || isWarping || isHealing || activeTool !== 'pan' || zoom <= 1) {
+    if (
+      isCropping ||
+      isWarping ||
+      isHealing ||
+      isDodgeBurn ||
+      activeTool !== 'pan' ||
+      zoom <= 1
+    ) {
       return;
     }
     setIsPanning(true);
@@ -513,7 +693,9 @@ export function ViewportCanvas({
     Boolean(frame) &&
     frame?.settings.printBorder !== 'none' &&
     viewMode !== 'negative';
-  const matPad = showMat ? (stageSize.w < 460 ? 28 : 44) : 0;
+  const matPad = showMat
+    ? Math.round((stageSize.w < 460 ? 22 : 34) * (borderThicknessPct / 6))
+    : 0;
 
   const imgW = activeDisplayData
     ? activeDisplayData.width
@@ -531,7 +713,11 @@ export function ViewportCanvas({
   );
   const boxW = Math.max(80, Math.round(imgW * fitScale));
   const boxH = Math.max(80, Math.round(imgH * fitScale));
-  const healPxRadius = Math.max(6, Math.round(healBrushRadius * Math.min(boxW, boxH)));
+  const activeBrushRatio = isDodgeBurn ? dodgeBurnRadius : healBrushRadius;
+  const activeBrushPxRadius = Math.max(
+    6,
+    Math.round(activeBrushRatio * Math.min(boxW, boxH))
+  );
 
   return (
     <div
@@ -707,12 +893,34 @@ export function ViewportCanvas({
             <button
               type="button"
               onClick={() =>
+                onChangeTool(activeTool === 'dodge-burn' ? 'pan' : 'dodge-burn')
+              }
+              disabled={!frame || isCropping || isWarping}
+              title="Paint Dodge (lighten) or Burn (darken) locally (D)"
+              className={`inline-flex items-center gap-1 px-2 py-1 rounded text-xs font-medium transition-colors whitespace-nowrap shrink-0 disabled:opacity-40 ${
+                isDodgeBurn || (frame?.settings.dodgeBurnStrokes?.length ?? 0) > 0
+                  ? isDodgeBurn
+                    ? 'bg-[#E59A28]/15 text-[#E59A28]'
+                    : 'text-zinc-200 hover:bg-white/[0.05]'
+                  : 'text-zinc-400 hover:text-zinc-100 hover:bg-white/[0.05]'
+              }`}
+            >
+              <Brush className="w-3.5 h-3.5" aria-hidden="true" />
+              <span className="hidden xl:inline">Dodge/Burn</span>
+              <span className="xl:hidden">D&amp;B</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() =>
                 onChangeTool(activeTool === 'crop' ? 'pan' : 'crop')
               }
               disabled={!frame || isWarping}
-              title="Crop borders & split multi-frame film strips (C)"
+              title="Crop borders, straighten horizon & split strips (C)"
               className={`inline-flex items-center gap-1 px-2 py-1 rounded text-xs font-medium transition-colors whitespace-nowrap shrink-0 disabled:opacity-40 ${
-                isCropping || frame?.settings.crop
+                isCropping ||
+                frame?.settings.crop ||
+                Math.abs(frame?.settings.straighten ?? 0) >= 0.05
                   ? 'bg-[#E59A28]/15 text-[#E59A28]'
                   : 'text-zinc-400 hover:text-zinc-100 hover:bg-white/[0.05]'
               }`}
@@ -731,7 +939,7 @@ export function ViewportCanvas({
               className={`inline-flex items-center gap-1 px-2 py-1 rounded text-xs font-medium transition-colors whitespace-nowrap shrink-0 disabled:opacity-40 ${
                 isWarping || frame?.settings.perspective
                   ? 'bg-[#E59A28]/15 text-[#E59A28]'
-                  : 'text-zinc-400 hover:text-zinc-100 hover:bg-white/[0.05]'
+                    : 'text-zinc-400 hover:text-zinc-100 hover:bg-white/[0.05]'
               }`}
             >
               <Scan className="w-3.5 h-3.5" aria-hidden="true" />
@@ -764,6 +972,36 @@ export function ViewportCanvas({
               aria-label="Flip horizontally"
             >
               <FlipHorizontal2 className="w-3.5 h-3.5" />
+            </button>
+
+            <button
+              type="button"
+              onClick={onToggleClipping}
+              disabled={!frame || viewMode === 'negative'}
+              title="Toggle highlight/shadow clipping warning (J)"
+              aria-label="Toggle clipping warning"
+              className={`p-1.5 rounded transition-colors disabled:opacity-40 ${
+                showClipping
+                  ? 'bg-red-500/20 text-red-300'
+                  : 'text-zinc-400 hover:text-zinc-100 hover:bg-white/[0.05]'
+              }`}
+            >
+              <AlertTriangle className="w-3.5 h-3.5" />
+            </button>
+
+            <button
+              type="button"
+              onClick={onToggleGrid}
+              disabled={!frame}
+              title="Toggle Rule-of-Thirds alignment grid (U)"
+              aria-label="Toggle alignment grid"
+              className={`p-1.5 rounded transition-colors disabled:opacity-40 ${
+                showGrid
+                  ? 'bg-white/[0.09] text-[#E59A28]'
+                  : 'text-zinc-400 hover:text-zinc-100 hover:bg-white/[0.05]'
+              }`}
+            >
+              <Grid3X3 className="w-3.5 h-3.5" />
             </button>
 
             <span className="w-px h-3.5 bg-white/[0.08] mx-1 hidden sm:inline-block" aria-hidden="true" />
@@ -807,12 +1045,68 @@ export function ViewportCanvas({
         </div>
       </div>
 
-      {/* Active Crop & Strip-Split Contextual Bar */}
+      {/* Active Crop, Aspect Ratio, Straighten & Strip-Split Contextual Bar */}
       {isCropping && frame && (
         <div className="shrink-0 bg-[#171511] border-b border-[#E59A28]/25 px-3.5 sm:px-5 py-2 flex flex-wrap items-center justify-between gap-2.5 text-xs">
-          <span className="text-amber-200/90">
-            {cropNote ?? 'Drag corners to crop, auto-frame sprockets, or split strips.'}
-          </span>
+          <div className="flex flex-wrap items-center gap-2">
+            <div className="flex items-center gap-0.5 p-0.5 rounded bg-[#0B0B0D] border border-white/[0.07]">
+              {ASPECT_RATIOS.map((ar) => (
+                <button
+                  key={ar.id}
+                  type="button"
+                  onClick={() => handleSelectAspectRatio(ar.id)}
+                  className={`px-2 py-0.5 rounded text-[11px] font-medium transition-colors whitespace-nowrap ${
+                    cropAspect === ar.id
+                      ? 'bg-[#E59A28]/20 text-[#E59A28]'
+                      : 'text-zinc-400 hover:text-zinc-200'
+                  }`}
+                >
+                  {ar.label}
+                </button>
+              ))}
+            </div>
+
+            <div className="flex items-center gap-2 text-zinc-300">
+              <span className="text-[11px] text-zinc-400">Straighten</span>
+              <input
+                type="range"
+                min={-15}
+                max={15}
+                step={0.25}
+                value={frame.settings.straighten ?? 0}
+                onPointerDown={() => {
+                  setIsAdjustingStraighten(true);
+                  onBeginDodgeBurnStroke();
+                }}
+                onPointerUp={() => setIsAdjustingStraighten(false)}
+                onPointerCancel={() => setIsAdjustingStraighten(false)}
+                onChange={(e) => onUpdateStraighten(Number(e.target.value), false)}
+                onDoubleClick={() => onUpdateStraighten(0, true)}
+                className="darkroom-slider w-24"
+                aria-label="Fine straighten angle"
+              />
+              <span className="text-[11px] font-mono tabular-nums text-zinc-300 w-11 text-right">
+                {(frame.settings.straighten ?? 0) > 0 ? '+' : ''}
+                {(frame.settings.straighten ?? 0).toFixed(1)}°
+              </span>
+              {Math.abs(frame.settings.straighten ?? 0) >= 0.05 && (
+                <button
+                  type="button"
+                  onClick={() => onUpdateStraighten(0, true)}
+                  className="text-[11px] text-zinc-400 hover:text-zinc-100 underline underline-offset-2"
+                >
+                  0°
+                </button>
+              )}
+            </div>
+
+            {cropNote && (
+              <span className="text-[11px] text-amber-200/80 hidden xl:inline">
+                {cropNote}
+              </span>
+            )}
+          </div>
+
           <div className="flex flex-wrap items-center gap-2 shrink-0">
             <button
               type="button"
@@ -943,6 +1237,86 @@ export function ViewportCanvas({
         </div>
       )}
 
+      {/* Active Dodge & Burn Contextual Bar */}
+      {isDodgeBurn && frame && (
+        <div className="shrink-0 bg-[#171511] border-b border-[#E59A28]/25 px-3.5 sm:px-5 py-2 flex flex-wrap items-center justify-between gap-3 text-xs">
+          <div className="flex flex-wrap items-center gap-2.5">
+            <div className="flex items-center gap-0.5 p-0.5 rounded bg-[#0B0B0D] border border-white/[0.08]">
+              <button
+                type="button"
+                onClick={() => setDodgeBurnMode('dodge')}
+                className={`px-2.5 py-1 rounded text-[11px] font-medium transition-colors ${
+                  dodgeBurnMode === 'dodge'
+                    ? 'bg-[#E59A28]/20 text-[#E59A28]'
+                    : 'text-zinc-400 hover:text-zinc-200'
+                }`}
+              >
+                Dodge (Lighten)
+              </button>
+              <button
+                type="button"
+                onClick={() => setDodgeBurnMode('burn')}
+                className={`px-2.5 py-1 rounded text-[11px] font-medium transition-colors ${
+                  dodgeBurnMode === 'burn'
+                    ? 'bg-sky-500/20 text-sky-300'
+                    : 'text-zinc-400 hover:text-zinc-200'
+                }`}
+              >
+                Burn (Darken)
+              </button>
+            </div>
+            <span className="text-[11px] text-amber-200/80">
+              {frame.settings.dodgeBurnStrokes?.length ?? 0} strokes
+            </span>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-3 shrink-0">
+            <label className="flex items-center gap-2 text-zinc-300">
+              <span>Size</span>
+              <input
+                type="range"
+                min={0.015}
+                max={0.14}
+                step={0.005}
+                value={dodgeBurnRadius}
+                onChange={(e) => setDodgeBurnRadius(Number(e.target.value))}
+                className="darkroom-slider w-20"
+                aria-label="Dodge burn brush size"
+              />
+            </label>
+            <label className="flex items-center gap-2 text-zinc-300">
+              <span>Strength</span>
+              <input
+                type="range"
+                min={0.08}
+                max={0.55}
+                step={0.02}
+                value={dodgeBurnStrength}
+                onChange={(e) => setDodgeBurnStrength(Number(e.target.value))}
+                className="darkroom-slider w-20"
+                aria-label="Dodge burn strength"
+              />
+            </label>
+            {(frame.settings.dodgeBurnStrokes?.length ?? 0) > 0 && (
+              <button
+                type="button"
+                onClick={onClearDodgeBurnStrokes}
+                className="px-2 py-1 rounded text-zinc-300 hover:text-white hover:bg-white/[0.06] transition-colors"
+              >
+                Clear
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={() => onChangeTool('pan')}
+              className="px-3 py-1.5 sm:py-1 rounded bg-[#E59A28] hover:bg-[#eda93f] text-[#0E0E10] font-semibold transition-colors"
+            >
+              Done
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Active Eyedropper Instruction Strip */}
       {(activeTool === 'pick-base' || activeTool === 'pick-gray') && frame && (
         <div className="shrink-0 bg-[#171511] border-b border-[#E59A28]/25 px-3.5 sm:px-5 py-1.5 flex items-center justify-between gap-4 text-xs">
@@ -965,7 +1339,7 @@ export function ViewportCanvas({
       <div
         ref={stageRef}
         className={`flex-1 min-h-0 darkroom-stage-bg relative flex items-center justify-center p-2.5 lg:p-9 overflow-hidden select-none ${
-          isHealing
+          isHealing || isDodgeBurn
             ? 'touch-none md:cursor-none'
             : activeTool === 'pick-base' || activeTool === 'pick-gray'
               ? 'cursor-crosshair'
@@ -1007,14 +1381,16 @@ export function ViewportCanvas({
               >
                 Choose Files
               </button>
-              <button
-                type="button"
-                onClick={onOpenCamera}
-                className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-md bg-white/[0.07] hover:bg-white/[0.12] text-zinc-200 text-xs font-medium transition-colors whitespace-nowrap"
-              >
-                <Camera className="w-3.5 h-3.5" aria-hidden="true" />
-                Scan
-              </button>
+              {showCameraScanner && (
+                <button
+                  type="button"
+                  onClick={onOpenCamera}
+                  className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-md bg-white/[0.07] hover:bg-white/[0.12] text-zinc-200 text-xs font-medium transition-colors whitespace-nowrap"
+                >
+                  <Camera className="w-3.5 h-3.5" aria-hidden="true" />
+                  Scan
+                </button>
+              )}
               <button
                 type="button"
                 onClick={onReloadSamples}
@@ -1048,7 +1424,7 @@ export function ViewportCanvas({
 
             <div className="relative max-w-full max-h-full flex flex-col items-center gap-1.5">
               <div
-                className={`shadow-2xl overflow-hidden transition-colors ${
+                className={`relative shadow-2xl overflow-hidden transition-colors ${
                   frame.settings.printBorder === 'white'
                     ? 'p-2 md:p-3.5 bg-[#F6F5F0]'
                     : frame.settings.printBorder === 'black'
@@ -1056,10 +1432,18 @@ export function ViewportCanvas({
                       : 'bg-black'
                 }`}
               >
-                <canvas
-                  ref={sidePosCanvasRef}
-                  className="max-h-[22dvh] sm:max-h-[25dvh] lg:max-h-[calc(100vh-290px)] max-w-full w-auto h-auto block"
-                />
+                <div className="relative">
+                  <canvas
+                    ref={sidePosCanvasRef}
+                    className="max-h-[22dvh] sm:max-h-[25dvh] lg:max-h-[calc(100vh-290px)] max-w-full w-auto h-auto block"
+                  />
+                  <canvas
+                    ref={sideClipCanvasRef}
+                    className={`absolute inset-0 w-full h-full pointer-events-none ${
+                      showClipping ? 'block' : 'hidden'
+                    }`}
+                  />
+                </div>
               </div>
               <span className="text-[11px] text-zinc-400">
                 {isAbCompare && abSnapshotSettings ? 'Live B' : 'Positive'}
@@ -1086,29 +1470,39 @@ export function ViewportCanvas({
               ref={containerRef}
               onClick={handleCanvasClick}
               onPointerDown={(e) => {
-                if (!isHealing || (e.button !== 0 && e.pointerType === 'mouse')) return;
-                e.stopPropagation();
-                onBeginHealStroke();
-                setIsPaintingHeal(true);
-                lastHealPtRef.current = null;
-                emitHealAtClient(e.clientX, e.clientY);
+                if (e.button !== 0 && e.pointerType === 'mouse') return;
+                if (isHealing) {
+                  e.stopPropagation();
+                  onBeginHealStroke();
+                  setIsPaintingHeal(true);
+                  lastHealPtRef.current = null;
+                  emitHealAtClient(e.clientX, e.clientY);
+                } else if (isDodgeBurn) {
+                  e.stopPropagation();
+                  onBeginDodgeBurnStroke();
+                  setIsPaintingDodgeBurn(true);
+                  lastDbPtRef.current = null;
+                  emitDodgeBurnAtClient(e.clientX, e.clientY);
+                }
               }}
               onPointerMove={(e) => {
-                if (!isHealing || !containerRef.current) return;
+                if ((!isHealing && !isDodgeBurn) || !containerRef.current) return;
                 if (e.pointerType === 'mouse') {
                   const rect = containerRef.current.getBoundingClientRect();
-                  setHealHover({
+                  setBrushHover({
                     x: e.clientX - rect.left,
                     y: e.clientY - rect.top,
                   });
                 }
-                if (isPaintingHeal) {
+                if (isHealing && isPaintingHeal) {
                   emitHealAtClient(e.clientX, e.clientY);
+                } else if (isDodgeBurn && isPaintingDodgeBurn) {
+                  emitDodgeBurnAtClient(e.clientX, e.clientY);
                 }
               }}
-              onPointerLeave={() => setHealHover(null)}
+              onPointerLeave={() => setBrushHover(null)}
               className={`relative bg-black overflow-hidden shrink-0 group ${
-                isHealing || isCropping || isWarping ? 'touch-none' : ''
+                isHealing || isDodgeBurn || isCropping || isWarping ? 'touch-none' : ''
               } ${showMat ? '' : 'shadow-[0_24px_60px_rgba(0,0,0,0.65)]'}`}
               style={{
                 width: `${boxW}px`,
@@ -1120,6 +1514,20 @@ export function ViewportCanvas({
                 className={`w-full h-full block object-contain ${
                   viewMode === 'negative' ? 'hidden' : 'block'
                 }`}
+              />
+
+              <canvas
+                ref={clipCanvasRef}
+                className={`absolute inset-0 w-full h-full pointer-events-none ${
+                  showClipping && viewMode !== 'negative' && !isCropping && !isWarping
+                    ? 'block'
+                    : 'hidden'
+                }`}
+                style={
+                  viewMode === 'split'
+                    ? { clipPath: `inset(0 0 0 ${wipePct}%)` }
+                    : undefined
+                }
               />
 
               <canvas
@@ -1137,6 +1545,28 @@ export function ViewportCanvas({
                     : undefined
                 }
               />
+
+              {/* Rule of Thirds & Straighten Alignment Grid */}
+              {(showGrid || isAdjustingStraighten) && !isCropping && !isWarping && (
+                <div className="absolute inset-0 z-10 grid grid-cols-3 grid-rows-3 pointer-events-none">
+                  <div className="border-r border-b border-white/20" />
+                  <div className="border-r border-b border-white/20" />
+                  <div className="border-b border-white/20" />
+                  <div className="border-r border-b border-white/20" />
+                  <div className="border-r border-b border-white/20" />
+                  <div className="border-b border-white/20" />
+                  <div className="border-r border-white/20" />
+                  <div className="border-r border-white/20" />
+                  <div />
+                </div>
+              )}
+
+              {isAdjustingStraighten && (
+                <div className="absolute inset-0 z-10 pointer-events-none flex items-center justify-center">
+                  <div className="w-full h-px bg-[#E59A28]/60" />
+                  <div className="absolute h-full w-px bg-[#E59A28]/60" />
+                </div>
+              )}
 
               {viewMode === 'split' && !isCropping && !isWarping && (
                 <>
@@ -1162,15 +1592,21 @@ export function ViewportCanvas({
                 </>
               )}
 
-              {/* Heal Brush Ring Cursor */}
-              {isHealing && healHover && (
+              {/* Heal / Dodge-Burn Brush Ring Cursor */}
+              {(isHealing || isDodgeBurn) && brushHover && (
                 <div
-                  className="absolute z-30 rounded-full border border-white/90 shadow-[0_0_0_1px_rgba(0,0,0,0.7)] pointer-events-none"
+                  className={`absolute z-30 rounded-full border shadow-[0_0_0_1px_rgba(0,0,0,0.7)] pointer-events-none ${
+                    isDodgeBurn
+                      ? dodgeBurnMode === 'dodge'
+                        ? 'border-[#E59A28]'
+                        : 'border-sky-400'
+                      : 'border-white/90'
+                  }`}
                   style={{
-                    left: `${healHover.x - healPxRadius}px`,
-                    top: `${healHover.y - healPxRadius}px`,
-                    width: `${healPxRadius * 2}px`,
-                    height: `${healPxRadius * 2}px`,
+                    left: `${brushHover.x - activeBrushPxRadius}px`,
+                    top: `${brushHover.y - activeBrushPxRadius}px`,
+                    width: `${activeBrushPxRadius * 2}px`,
+                    height: `${activeBrushPxRadius * 2}px`,
                   }}
                 />
               )}

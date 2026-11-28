@@ -2,7 +2,7 @@
   "entities": {
     "UserProfile": {
       "title": "UserProfile",
-      "description": "Private user account profile for NEGORA cloud sync.",
+      "description": "User account profile and activity counters for NEGORA cloud sync.",
       "type": "object",
       "properties": {
         "uid": {
@@ -17,6 +17,12 @@
         "email": {
           "type": "string",
           "maxLength": 200
+        },
+        "presetCount": {
+          "type": "integer"
+        },
+        "rollCount": {
+          "type": "integer"
         },
         "createdAt": {
           "type": "string",
@@ -221,12 +227,210 @@
         "createdAt",
         "updatedAt"
       ]
+    },
+    "SiteConfig": {
+      "title": "SiteConfig",
+      "description": "Global site announcement banner, maintenance mode, and remote feature toggles managed by the host.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "maxLength": 64,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "announcementEnabled": {
+          "type": "boolean"
+        },
+        "announcementText": {
+          "type": "string",
+          "maxLength": 280
+        },
+        "maintenanceMode": {
+          "type": "boolean"
+        },
+        "maintenanceMessage": {
+          "type": "string",
+          "maxLength": 280
+        },
+        "cloudSyncEnabled": {
+          "type": "boolean"
+        },
+        "cameraScannerEnabled": {
+          "type": "boolean"
+        },
+        "creatorName": {
+          "type": "string",
+          "maxLength": 80
+        },
+        "updatedBy": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "id",
+        "announcementEnabled",
+        "announcementText",
+        "maintenanceMode",
+        "maintenanceMessage",
+        "cloudSyncEnabled",
+        "cameraScannerEnabled",
+        "updatedBy",
+        "updatedAt"
+      ]
+    },
+    "FeaturedPreset": {
+      "title": "FeaturedPreset",
+      "description": "Curated film preset published by the host for all NEGORA users.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "ownerId": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "description": {
+          "type": "string",
+          "maxLength": 160
+        },
+        "isPublic": {
+          "type": "boolean"
+        },
+        "settings": {
+          "type": "object"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "id",
+        "ownerId",
+        "name",
+        "description",
+        "isPublic",
+        "settings",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "FeedbackReport": {
+      "title": "FeedbackReport",
+      "description": "User-submitted feedback or bug report reviewed by the host.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "authorUid": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "authorName": {
+          "type": "string",
+          "maxLength": 120
+        },
+        "authorEmail": {
+          "type": "string",
+          "maxLength": 200
+        },
+        "category": {
+          "type": "string",
+          "enum": ["feature", "bug", "film-stock", "general"]
+        },
+        "message": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1000
+        },
+        "status": {
+          "type": "string",
+          "enum": ["open", "resolved"]
+        },
+        "hostNote": {
+          "type": "string",
+          "maxLength": 400
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "id",
+        "authorUid",
+        "authorName",
+        "authorEmail",
+        "category",
+        "message",
+        "status",
+        "hostNote",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "BlockedMember": {
+      "title": "BlockedMember",
+      "description": "Suspended account record blocking cloud sync access for that user.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "email": {
+          "type": "string",
+          "maxLength": 200
+        },
+        "reason": {
+          "type": "string",
+          "maxLength": 200
+        },
+        "blockedBy": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["uid", "email", "reason", "blockedBy", "createdAt"]
     }
   },
   "firestore": {
     "/users/{userId}": {
       "schema": { "$ref": "#/entities/UserProfile" },
-      "description": "Private user account profile."
+      "description": "User account profile (readable/writable by owner; listable by verified host admin)."
     },
     "/users/{userId}/presets/{presetId}": {
       "schema": { "$ref": "#/entities/GradingPreset" },
@@ -239,6 +443,22 @@
     "/users/{userId}/rolls/{rollId}/frames/{frameId}": {
       "schema": { "$ref": "#/entities/FilmFrame" },
       "description": "Individual frames belonging to a synced film roll."
+    },
+    "/siteConfig/{configId}": {
+      "schema": { "$ref": "#/entities/SiteConfig" },
+      "description": "Global announcement banner, maintenance mode, and feature toggles."
+    },
+    "/featuredPresets/{presetId}": {
+      "schema": { "$ref": "#/entities/FeaturedPreset" },
+      "description": "Host-curated film presets available to all users."
+    },
+    "/feedback/{feedbackId}": {
+      "schema": { "$ref": "#/entities/FeedbackReport" },
+      "description": "User feedback and bug reports readable by author or host."
+    },
+    "/blockedUsers/{userId}": {
+      "schema": { "$ref": "#/entities/BlockedMember" },
+      "description": "Blocked accounts whose cloud sync privileges are suspended by the host."
     }
   }
 }

@@ -1,5 +1,5 @@
 import type { User } from 'firebase/auth';
-import { Cloud, CloudDownload, CloudUpload, LogOut, X } from 'lucide-react';
+import { Cloud, CloudDownload, CloudUpload, LogIn, LogOut, ShieldCheck, X } from 'lucide-react';
 
 interface CloudSyncModalProps {
   isOpen: boolean;
@@ -11,6 +11,11 @@ interface CloudSyncModalProps {
   errorMessage: string | null;
   presetCount: number;
   frameCount: number;
+  cloudSyncEnabled?: boolean;
+  blockedReason?: string | null;
+  isHost?: boolean;
+  memberCount?: number;
+  onOpenHostConsole?: () => void;
   onSignIn: () => Promise<void>;
   onSignOut: () => Promise<void>;
   onPushRoll: () => Promise<void>;
@@ -27,6 +32,11 @@ export function CloudSyncModal({
   errorMessage,
   presetCount,
   frameCount,
+  cloudSyncEnabled = true,
+  blockedReason = null,
+  isHost = false,
+  memberCount = 0,
+  onOpenHostConsole,
   onSignIn,
   onSignOut,
   onPushRoll,
@@ -44,12 +54,16 @@ export function CloudSyncModal({
       <div className="w-full max-w-md rounded-xl border border-white/[0.08] bg-[#121214] overflow-hidden">
         <div className="px-5 py-4 border-b border-white/[0.06] flex items-center justify-between">
           <div className="flex items-center gap-2">
-            <Cloud className="w-4 h-4 text-[#E59A28]" aria-hidden="true" />
+            {user ? (
+              <Cloud className="w-4 h-4 text-[#E59A28]" aria-hidden="true" />
+            ) : (
+              <LogIn className="w-4 h-4 text-[#E59A28]" aria-hidden="true" />
+            )}
             <h2
               className="text-base font-semibold text-zinc-100"
               style={{ fontFamily: 'var(--font-display)' }}
             >
-              Cloud Roll Sync
+              {user ? 'Account & Roll Sync' : 'Sign in'}
             </h2>
           </div>
           <button
@@ -105,27 +119,57 @@ export function CloudSyncModal({
                 <span>{presetCount} cloud presets</span>
               </div>
 
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
-                <button
-                  type="button"
-                  disabled={isSyncing}
-                  onClick={() => void onPushRoll()}
-                  className="inline-flex items-center justify-center gap-1.5 px-3.5 py-2.5 rounded-md bg-[#E59A28] hover:bg-[#eda93f] text-[#0E0E10] text-xs font-semibold transition-colors disabled:opacity-50"
-                >
-                  <CloudUpload className="w-3.5 h-3.5" aria-hidden="true" />
-                  {isSyncing ? 'Syncing...' : 'Save Roll to Cloud'}
-                </button>
+              {blockedReason && !isHost ? (
+                <div className="rounded-md border border-red-800/40 bg-red-950/40 px-3 py-2.5 text-xs text-red-200 leading-relaxed">
+                  Cloud sync is currently suspended for your account: {blockedReason}
+                </div>
+              ) : !cloudSyncEnabled && !isHost ? (
+                <div className="rounded-md border border-white/[0.08] bg-[#0B0B0D] px-3 py-2.5 text-xs text-zinc-400 leading-relaxed">
+                  Cloud roll sync is temporarily paused by the host. Local editing and
+                  exports remain available.
+                </div>
+              ) : (
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                  <button
+                    type="button"
+                    disabled={isSyncing}
+                    onClick={() => void onPushRoll()}
+                    className="inline-flex items-center justify-center gap-1.5 px-3.5 py-2.5 rounded-md bg-[#E59A28] hover:bg-[#eda93f] text-[#0E0E10] text-xs font-semibold transition-colors disabled:opacity-50"
+                  >
+                    <CloudUpload className="w-3.5 h-3.5" aria-hidden="true" />
+                    {isSyncing ? 'Syncing...' : 'Save Roll to Cloud'}
+                  </button>
 
+                  <button
+                    type="button"
+                    disabled={isSyncing}
+                    onClick={() => void onPullRoll()}
+                    className="inline-flex items-center justify-center gap-1.5 px-3.5 py-2.5 rounded-md bg-white/[0.07] hover:bg-white/[0.12] text-zinc-200 text-xs font-medium transition-colors disabled:opacity-50"
+                  >
+                    <CloudDownload className="w-3.5 h-3.5" aria-hidden="true" />
+                    Load Cloud Roll
+                  </button>
+                </div>
+              )}
+
+              {isHost && onOpenHostConsole && (
                 <button
                   type="button"
-                  disabled={isSyncing}
-                  onClick={() => void onPullRoll()}
-                  className="inline-flex items-center justify-center gap-1.5 px-3.5 py-2.5 rounded-md bg-white/[0.07] hover:bg-white/[0.12] text-zinc-200 text-xs font-medium transition-colors disabled:opacity-50"
+                  onClick={() => {
+                    onClose();
+                    onOpenHostConsole();
+                  }}
+                  className="w-full inline-flex items-center justify-between px-3.5 py-2.5 rounded-md border border-white/[0.08] bg-white/[0.03] hover:bg-white/[0.07] text-xs text-zinc-200 transition-colors"
                 >
-                  <CloudDownload className="w-3.5 h-3.5" aria-hidden="true" />
-                  Load Cloud Roll
+                  <span className="inline-flex items-center gap-2 font-medium">
+                    <ShieldCheck className="w-3.5 h-3.5 text-[#E59A28]" aria-hidden="true" />
+                    Open Host Console
+                  </span>
+                  <span className="font-mono tabular-nums text-[11px] text-zinc-400">
+                    {memberCount} members
+                  </span>
                 </button>
-              </div>
+              )}
             </div>
           )}
 

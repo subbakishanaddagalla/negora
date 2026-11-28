@@ -2,15 +2,20 @@ import { useState } from 'react';
 import type {
   ActiveTool,
   BwToneStyle,
+  ExportOptions,
   FilmProfileId,
   GradingPreset,
   GradingSettings,
   HistogramData,
+  HslChannelKey,
   NegativeFrame,
   PrintBorderStyle,
 } from '../types/darkroom';
+import type { FeaturedPresetRecord } from '../lib/cloudSync';
 import {
   createDefaultCurves,
+  createDefaultFilmCharacter,
+  createDefaultHsl,
   createDefaultSplitTone,
 } from '../lib/negativeProcessor';
 import { HistogramPanel } from './HistogramPanel';
@@ -23,6 +28,8 @@ import {
   Download,
   Pipette,
   RotateCcw,
+  SlidersHorizontal,
+  Sparkles,
   Trash2,
   Wand2,
 } from 'lucide-react';
@@ -38,11 +45,16 @@ interface InspectorPanelProps {
   onResetFrame: () => void;
   onSyncToRoll: () => void;
   onExport: (format: 'image/png' | 'image/jpeg') => Promise<void>;
+  onExportLut: () => void;
+  exportOptions: ExportOptions;
+  onChangeExportOptions: (patch: Partial<ExportOptions>) => void;
   isExporting: boolean;
   frameCount: number;
   presets: GradingPreset[];
+  featuredPresets?: FeaturedPresetRecord[];
   onSavePreset: (name: string) => void;
   onApplyPreset: (preset: GradingPreset) => void;
+  onApplyFeaturedPreset?: (preset: FeaturedPresetRecord) => void;
   onDeletePreset: (id: string) => void;
   onUpdateFrameMeta: (patch: {
     name?: string;
@@ -158,16 +170,23 @@ export function InspectorPanel({
   onResetFrame,
   onSyncToRoll,
   onExport,
+  onExportLut,
+  exportOptions,
+  onChangeExportOptions,
   isExporting,
   frameCount,
   presets,
+  featuredPresets = [],
   onSavePreset,
   onApplyPreset,
+  onApplyFeaturedPreset,
   onDeletePreset,
   onUpdateFrameMeta,
 }: InspectorPanelProps) {
   const [syncNotice, setSyncNotice] = useState(false);
   const [presetName, setPresetName] = useState('');
+  const [activeHslChannel, setActiveHslChannel] = useState<HslChannelKey>('reds');
+  const [showExportOptions, setShowExportOptions] = useState(false);
 
   if (!frame) {
     return (
@@ -200,7 +219,43 @@ export function InspectorPanel({
   const baseRgbCss = `rgb(${s.baseColor.r}, ${s.baseColor.g}, ${s.baseColor.b})`;
   const curves = s.curves ?? createDefaultCurves();
   const splitTone = s.splitTone ?? createDefaultSplitTone();
+  const filmChar = s.filmCharacter ?? createDefaultFilmCharacter();
+  const hsl = s.hsl ?? createDefaultHsl();
+  const currentHsl = hsl[activeHslChannel];
   const printBorder: PrintBorderStyle = s.printBorder ?? 'none';
+
+  const updateFilmChar = (
+    patch: Partial<typeof filmChar>,
+    recordHistory = false
+  ) => {
+    onUpdateSettings(
+      {
+        filmCharacter: {
+          ...filmChar,
+          ...patch,
+        },
+      },
+      recordHistory
+    );
+  };
+
+  const updateHslChannel = (
+    patch: Partial<typeof currentHsl>,
+    recordHistory = false
+  ) => {
+    onUpdateSettings(
+      {
+        hsl: {
+          ...hsl,
+          [activeHslChannel]: {
+            ...currentHsl,
+            ...patch,
+          },
+        },
+      },
+      recordHistory
+    );
+  };
 
   const handleSync = () => {
     onSyncToRoll();
@@ -348,17 +403,46 @@ export function InspectorPanel({
           )}
         </div>
 
-        {/* Custom Presets */}
+        {/* Custom & Featured Presets */}
         <AccordionGroup
-          title="Custom Presets"
+          title="Presets"
           trailing={
-            presets.length > 0 ? (
+            presets.length + featuredPresets.length > 0 ? (
               <span className="text-[11px] font-mono tabular-nums text-zinc-500">
-                {presets.length}
+                {presets.length + featuredPresets.length}
               </span>
             ) : undefined
           }
         >
+          {featuredPresets.length > 0 && onApplyFeaturedPreset && (
+            <div className="space-y-1.5">
+              <div className="flex items-center gap-1 text-[10px] font-mono uppercase tracking-wider text-[#E59A28]">
+                <Sparkles className="w-3 h-3" aria-hidden="true" />
+                <span>Featured Film Looks</span>
+              </div>
+              <div className="space-y-1">
+                {featuredPresets.map((fp) => (
+                  <button
+                    key={fp.id}
+                    type="button"
+                    onClick={() => onApplyFeaturedPreset(fp)}
+                    title={fp.description || fp.name}
+                    className="w-full text-left rounded bg-[#0B0B0D] px-2.5 py-1.5 border border-[#E59A28]/20 hover:border-[#E59A28]/50 transition-colors"
+                  >
+                    <div className="text-xs text-zinc-100 hover:text-[#E59A28] truncate font-medium">
+                      {fp.name}
+                    </div>
+                    {fp.description && (
+                      <div className="text-[10px] text-zinc-500 truncate">
+                        {fp.description}
+                      </div>
+                    )}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
           <div className="flex items-center gap-1.5">
             <input
               type="text"
@@ -385,7 +469,7 @@ export function InspectorPanel({
 
           {presets.length === 0 ? (
             <p className="text-[11px] text-zinc-500">
-              No saved presets yet. Save your current look to reuse across rolls.
+              No personal presets yet. Save your current look to reuse across rolls.
             </p>
           ) : (
             <div className="space-y-1">
@@ -535,6 +619,137 @@ export function InspectorPanel({
             />
           </AccordionGroup>
         )}
+
+        {/* Selective Color (HSL) (Collapsed by default, Color/Restore only) */}
+        {!isBW && (
+          <AccordionGroup
+            title="Selective Color (HSL)"
+            trailing={
+              currentHsl.h !== 0 || currentHsl.s !== 0 || currentHsl.l !== 0 ? (
+                <button
+                  type="button"
+                  onClick={() => updateHslChannel({ h: 0, s: 0, l: 0 }, true)}
+                  className="text-[11px] text-zinc-400 hover:text-[#E59A28] transition-colors"
+                >
+                  Reset
+                </button>
+              ) : undefined
+            }
+          >
+            <div className="grid grid-cols-5 gap-1 p-0.5 rounded-md bg-[#0B0B0D]">
+              {(
+                [
+                  { id: 'reds', label: 'Red', dot: '#ef4444' },
+                  { id: 'oranges', label: 'Org', dot: '#f97316' },
+                  { id: 'yellows', label: 'Yel', dot: '#eab308' },
+                  { id: 'greens', label: 'Grn', dot: '#22c55e' },
+                  { id: 'blues', label: 'Blu', dot: '#3b82f6' },
+                ] as { id: HslChannelKey; label: string; dot: string }[]
+              ).map((ch) => {
+                const shift = hsl[ch.id];
+                const isEdited = shift.h !== 0 || shift.s !== 0 || shift.l !== 0;
+                const isActive = activeHslChannel === ch.id;
+                return (
+                  <button
+                    key={ch.id}
+                    type="button"
+                    onClick={() => setActiveHslChannel(ch.id)}
+                    className={`py-1 rounded text-[11px] font-medium transition-colors flex items-center justify-center gap-1 ${
+                      isActive
+                        ? 'bg-white/[0.1] text-zinc-100'
+                        : isEdited
+                          ? 'text-[#E59A28] hover:bg-white/[0.04]'
+                          : 'text-zinc-400 hover:text-zinc-200'
+                    }`}
+                  >
+                    <span
+                      className="w-1.5 h-1.5 rounded-full shrink-0"
+                      style={{ backgroundColor: ch.dot }}
+                      aria-hidden="true"
+                    />
+                    <span>{ch.label}</span>
+                  </button>
+                );
+              })}
+            </div>
+
+            <div className="space-y-3 sm:grid sm:grid-cols-2 sm:gap-x-6 sm:gap-y-3 sm:space-y-0 lg:block lg:space-y-3">
+              <SliderRow
+                label="Hue"
+                value={currentHsl.h}
+                min={-30}
+                max={30}
+                defaultValue={0}
+                onBeginEdit={onBeginEdit}
+                onChange={(v, rec) => updateHslChannel({ h: v }, rec)}
+              />
+              <SliderRow
+                label="Saturation"
+                value={currentHsl.s}
+                min={-100}
+                max={100}
+                defaultValue={0}
+                onBeginEdit={onBeginEdit}
+                onChange={(v, rec) => updateHslChannel({ s: v }, rec)}
+              />
+              <SliderRow
+                label="Luminance"
+                value={currentHsl.l}
+                min={-50}
+                max={50}
+                defaultValue={0}
+                onBeginEdit={onBeginEdit}
+                onChange={(v, rec) => updateHslChannel({ l: v }, rec)}
+              />
+            </div>
+          </AccordionGroup>
+        )}
+
+        {/* Analog Film Character: Grain, Halation & Matte Fade */}
+        <AccordionGroup title="Film Character">
+          <div className="space-y-3 sm:grid sm:grid-cols-2 sm:gap-x-6 sm:gap-y-3 sm:space-y-0 lg:block lg:space-y-3">
+            <SliderRow
+              label="Film Grain"
+              value={filmChar.grainAmount}
+              min={0}
+              max={100}
+              defaultValue={0}
+              formatValue={(v) => `${v}%`}
+              onBeginEdit={onBeginEdit}
+              onChange={(v, rec) => updateFilmChar({ grainAmount: v }, rec)}
+            />
+            <SliderRow
+              label="Grain Size"
+              value={filmChar.grainSize}
+              min={0}
+              max={100}
+              defaultValue={35}
+              formatValue={(v) => `${v}%`}
+              onBeginEdit={onBeginEdit}
+              onChange={(v, rec) => updateFilmChar({ grainSize: v }, rec)}
+            />
+            <SliderRow
+              label="Halation Glow"
+              value={filmChar.halation}
+              min={0}
+              max={100}
+              defaultValue={0}
+              formatValue={(v) => `${v}%`}
+              onBeginEdit={onBeginEdit}
+              onChange={(v, rec) => updateFilmChar({ halation: v }, rec)}
+            />
+            <SliderRow
+              label="Matte Fade"
+              value={filmChar.fade}
+              min={0}
+              max={100}
+              defaultValue={0}
+              formatValue={(v) => `${v}%`}
+              onBeginEdit={onBeginEdit}
+              onChange={(v, rec) => updateFilmChar({ fade: v }, rec)}
+            />
+          </div>
+        </AccordionGroup>
 
         {/* Film Base & Backlight Falloff (Collapsed by default) */}
         <AccordionGroup
@@ -708,6 +923,112 @@ export function InspectorPanel({
 
       {/* Clean Export Footer */}
       <div className="shrink-0 border-t border-white/[0.06] bg-[#101012] px-4 lg:px-5 py-2.5 lg:py-3.5 space-y-2 lg:space-y-2.5">
+        {showExportOptions && (
+          <div className="rounded-md bg-[#0B0B0D] border border-white/[0.07] p-2.5 space-y-2.5 text-[11px]">
+            <div className="grid grid-cols-2 gap-2">
+              <div className="space-y-1">
+                <span className="text-zinc-400 block">Max Edge</span>
+                <div className="grid grid-cols-3 gap-0.5 p-0.5 rounded bg-[#141417]">
+                  {(
+                    [
+                      { label: 'Full', val: null },
+                      { label: '4K', val: 3840 },
+                      { label: '2K', val: 2048 },
+                    ] as { label: string; val: number | null }[]
+                  ).map((opt) => (
+                    <button
+                      key={opt.label}
+                      type="button"
+                      onClick={() => onChangeExportOptions({ maxEdgePx: opt.val })}
+                      className={`py-1 rounded transition-colors ${
+                        exportOptions.maxEdgePx === opt.val
+                          ? 'bg-white/[0.12] text-zinc-100 font-medium'
+                          : 'text-zinc-400 hover:text-zinc-200'
+                      }`}
+                    >
+                      {opt.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div className="space-y-1">
+                <span className="text-zinc-400 block">JPG Quality</span>
+                <div className="grid grid-cols-3 gap-0.5 p-0.5 rounded bg-[#141417]">
+                  {[0.85, 0.95, 1.0].map((q) => (
+                    <button
+                      key={q}
+                      type="button"
+                      onClick={() => onChangeExportOptions({ jpegQuality: q })}
+                      className={`py-1 rounded transition-colors font-mono tabular-nums ${
+                        Math.abs(exportOptions.jpegQuality - q) < 0.01
+                          ? 'bg-white/[0.12] text-zinc-100 font-medium'
+                          : 'text-zinc-400 hover:text-zinc-200'
+                      }`}
+                    >
+                      {Math.round(q * 100)}%
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </div>
+
+            {printBorder !== 'none' && (
+              <div className="space-y-1.5 pt-1 border-t border-white/[0.06]">
+                <div className="flex items-center justify-between">
+                  <span className="text-zinc-400">Border Width</span>
+                  <div className="flex items-center gap-1">
+                    {(
+                      [
+                        { label: 'Thin', val: 3 },
+                        { label: 'Std', val: 6 },
+                        { label: 'Wide', val: 10 },
+                      ] as { label: string; val: number }[]
+                    ).map((b) => (
+                      <button
+                        key={b.label}
+                        type="button"
+                        onClick={() =>
+                          onChangeExportOptions({ borderThicknessPct: b.val })
+                        }
+                        className={`px-2 py-0.5 rounded transition-colors ${
+                          exportOptions.borderThicknessPct === b.val
+                            ? 'bg-white/[0.12] text-zinc-100 font-medium'
+                            : 'text-zinc-400 hover:text-zinc-200'
+                        }`}
+                      >
+                        {b.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                <label className="flex items-center justify-between text-zinc-300 cursor-pointer select-none">
+                  <span>Include Rebate Caption</span>
+                  <input
+                    type="checkbox"
+                    checked={exportOptions.includeRebateCaption}
+                    onChange={(e) =>
+                      onChangeExportOptions({
+                        includeRebateCaption: e.target.checked,
+                      })
+                    }
+                    className="accent-[#E59A28] rounded"
+                  />
+                </label>
+              </div>
+            )}
+
+            <button
+              type="button"
+              onClick={onExportLut}
+              className="w-full py-1.5 rounded bg-white/[0.06] hover:bg-white/[0.11] text-zinc-200 transition-colors font-medium"
+            >
+              Export 3D LUT (.cube)
+            </button>
+          </div>
+        )}
+
         <div className="flex items-center gap-2">
           <button
             type="button"
@@ -741,14 +1062,28 @@ export function InspectorPanel({
             {syncNotice ? 'Synced to roll' : 'Sync to roll'}
           </button>
 
-          <button
-            type="button"
-            onClick={onResetFrame}
-            className="inline-flex items-center gap-1 hover:text-zinc-200 transition-colors whitespace-nowrap"
-          >
-            <RotateCcw className="w-3 h-3" aria-hidden="true" />
-            Reset
-          </button>
+          <div className="flex items-center gap-3">
+            <button
+              type="button"
+              onClick={() => setShowExportOptions((v) => !v)}
+              aria-expanded={showExportOptions}
+              className={`inline-flex items-center gap-1 transition-colors whitespace-nowrap ${
+                showExportOptions ? 'text-[#E59A28]' : 'hover:text-zinc-200'
+              }`}
+            >
+              <SlidersHorizontal className="w-3 h-3" aria-hidden="true" />
+              Options
+            </button>
+
+            <button
+              type="button"
+              onClick={onResetFrame}
+              className="inline-flex items-center gap-1 hover:text-zinc-200 transition-colors whitespace-nowrap"
+            >
+              <RotateCcw className="w-3 h-3" aria-hidden="true" />
+              Reset
+            </button>
+          </div>
         </div>
       </div>
     </aside>

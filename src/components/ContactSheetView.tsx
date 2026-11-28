@@ -32,6 +32,7 @@ interface ContactSheetViewProps {
   onResetRoll: () => void;
   onImportClick: () => void;
   onOpenCamera: () => void;
+  showCameraScanner?: boolean;
   isBatchExporting: boolean;
   zipProgress: { completed: number; total: number } | null;
 }
@@ -188,6 +189,7 @@ export function ContactSheetView({
   onResetRoll,
   onImportClick,
   onOpenCamera,
+  showCameraScanner = true,
   isBatchExporting,
   zipProgress,
 }: ContactSheetViewProps) {
@@ -475,14 +477,16 @@ export function ContactSheetView({
                 <Upload className="w-3.5 h-3.5" aria-hidden="true" />
                 Import Negatives
               </button>
-              <button
-                type="button"
-                onClick={onOpenCamera}
-                className="inline-flex items-center gap-2 px-4 py-2 rounded-md bg-white/[0.07] hover:bg-white/[0.12] text-zinc-200 text-xs font-medium transition-colors"
-              >
-                <Camera className="w-3.5 h-3.5" aria-hidden="true" />
-                Scan with Camera
-              </button>
+              {showCameraScanner && (
+                <button
+                  type="button"
+                  onClick={onOpenCamera}
+                  className="inline-flex items-center gap-2 px-4 py-2 rounded-md bg-white/[0.07] hover:bg-white/[0.12] text-zinc-200 text-xs font-medium transition-colors"
+                >
+                  <Camera className="w-3.5 h-3.5" aria-hidden="true" />
+                  Scan with Camera
+                </button>
+              )}
             </div>
           </div>
         ) : (

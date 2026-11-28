@@ -15,8 +15,11 @@ export type ActiveTool =
   | 'pick-base'
   | 'pick-gray'
   | 'heal'
+  | 'dodge-burn'
   | 'crop'
   | 'perspective';
+
+export type CropAspectPreset = 'free' | '3:2' | '4:5' | '1:1' | '6:7' | '16:9';
 
 export type AppSection = 'darkroom' | 'contact-sheet' | 'guide';
 
@@ -54,6 +57,39 @@ export interface HealStroke {
   radius: number; // normalized fraction of min(width, height)
 }
 
+export interface DodgeBurnStroke {
+  id: string;
+  mode: 'dodge' | 'burn';
+  x: number; // normalized 0..1 in processed frame
+  y: number; // normalized 0..1 in processed frame
+  radius: number; // normalized fraction of min(width, height)
+  strength: number; // 0.05..0.6
+}
+
+export interface FilmCharacterSettings {
+  grainAmount: number; // 0..100
+  grainSize: number; // 0..100
+  halation: number; // 0..100
+  fade: number; // 0..100
+}
+
+export type HslChannelKey = 'reds' | 'oranges' | 'yellows' | 'greens' | 'blues';
+
+export interface HslChannelShift {
+  h: number; // -30..+30
+  s: number; // -100..+100
+  l: number; // -50..+50
+}
+
+export type HslSettings = Record<HslChannelKey, HslChannelShift>;
+
+export interface ExportOptions {
+  jpegQuality: number; // 0.7..1.0
+  maxEdgePx: number | null; // null = original full res
+  borderThicknessPct: number; // 3..12
+  includeRebateCaption: boolean;
+}
+
 export interface ToneCurves {
   master: Point2D[];
   r: Point2D[];
@@ -86,12 +122,16 @@ export interface GradingSettings {
   sharpen: number; // 0 to 100
   dustClean: number; // 0 to 100
   rotate: 0 | 90 | 180 | 270;
+  straighten?: number; // -15 to +15 degrees
   flipH: boolean;
   crop: CropRect | null;
   perspective: PerspectiveQuad | null;
   healStrokes: HealStroke[];
+  dodgeBurnStrokes?: DodgeBurnStroke[];
   curves: ToneCurves;
   splitTone: SplitToneOffsets;
+  filmCharacter?: FilmCharacterSettings;
+  hsl?: HslSettings;
   printBorder: PrintBorderStyle;
 }
 
